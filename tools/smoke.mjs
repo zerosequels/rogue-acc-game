@@ -58,12 +58,11 @@ await page.waitForFunction(() => !document.getElementById('boot'), { timeout: 45
   .then(() => console.log('✓ booted (rapier wasm + shaders compiled)'))
   .catch(() => { throw new Error('boot screen never cleared — boot() threw') })
 
-// Stage intro overlay should be up.
+// The benchmark brief should be up, naming the funding round.
 const introText = await page.textContent('#sheet')
-if (!/Stage 1/.test(introText || '')) throw new Error('stage intro missing: ' + introText)
-console.log('✓ stage intro rendered')
-const diag = (introText || '').match(/config check[^\n]*/)
-console.log('  ', diag ? diag[0].trim() : '(no diagnostics line)')
+if (!/Pre-Seed/.test(introText || '')) throw new Error('benchmark brief missing: ' + introText)
+if (!/Capital/.test(introText || '')) throw new Error('brief has no capital line: ' + introText)
+console.log('✓ benchmark brief rendered (Pre-Seed, capital shown)')
 
 await page.keyboard.press('Enter')
 await page.waitForTimeout(400)
@@ -72,9 +71,10 @@ const probe = () => page.evaluate(() => ({
   phase: window.game?.['run']?.phase,
   score: window.game?.['run']?.score,
   act: window.game?.['run']?.activations,
-  stage: window.game?.['run']?.stage,
+  money: window.game?.['run']?.money,
   passes: window.game?.['run']?.totals?.passesFired,
   pins: window.game?.['run']?.totals?.pinsStruck,
+  signal: window.game?.['run']?.totals?.signalsFired,
 }))
 console.log('✓ after ENGAGE:', JSON.stringify(await probe()))
 
@@ -90,38 +90,56 @@ if (process.env.ACTION_SHOT) {
   await page.waitForFunction(() => window.game?.['run']?.phase !== 'resolving', { timeout: 20000 }).catch(() => {})
 }
 
-// Fire 6 passes with varied aim + temperature, letting each fully resolve.
-for (let i = 0; i < 6; i++) {
-  await page.keyboard.press(String((i % 3) + 1))          // temperature 1-3
-  await page.keyboard.down(i % 2 ? 'ArrowLeft' : 'ArrowRight')
-  await page.waitForTimeout(120 + i * 40)
-  await page.keyboard.up(i % 2 ? 'ArrowLeft' : 'ArrowRight')
-  await page.keyboard.down(' ')
-  await page.waitForTimeout(300)                           // charge
-  await page.keyboard.up(' ')
-  // Wait for the pass to resolve back to 'aim' (or the stage to end).
-  await page.waitForFunction(
-    () => window.game?.['run']?.phase !== 'resolving',
-    { timeout: 25000 },
-  ).catch(() => console.log('  ! pass', i, 'did not resolve in 25s'))
-  await page.waitForTimeout(150)
+// Fire passes until the benchmark resolves.
+for (let i = 0; i < 12; i++) {
   const st = await probe()
-  console.log(`  pass ${i + 1}: phase=${st.phase} score=${st.score} act=${st.act} pins=${st.pins}`)
   if (st.phase !== 'aim') break
+  await page.mouse.move(600 + i * 25, 480)
+  await page.keyboard.down(' ')
+  await page.waitForTimeout(280)
+  await page.keyboard.up(' ')
+  await page.waitForFunction(() => window.game?.['run']?.phase !== 'resolving', { timeout: 25000 })
+    .catch(() => console.log('  ! pass', i, 'did not resolve in 25s'))
+  await page.waitForTimeout(140)
+  const after = await probe()
+  console.log(`  pass ${i + 1}: phase=${after.phase} score=${after.score} act=${after.act} signal=${after.signal}`)
 }
 
-const final = await probe()
-if (!final.passes || final.passes < 3) throw new Error('passes never fired: ' + JSON.stringify(final))
-if (!final.pins || final.pins < 10) throw new Error('no pin strikes registered: ' + JSON.stringify(final))
-console.log('✓ cascades scoring:', JSON.stringify(final))
+const mid = await probe()
+if (!mid.passes || mid.passes < 2) throw new Error('passes never fired: ' + JSON.stringify(mid))
+if (!mid.pins || mid.pins < 10) throw new Error('no contacts registered: ' + JSON.stringify(mid))
+if (!mid.signal || mid.signal < 20) throw new Error('propagation did not fire: ' + JSON.stringify(mid))
+console.log(`✓ contacts ${mid.pins}, signal activations ${mid.signal}`)
 
-// Mouse aiming + click-to-fire.
-await page.mouse.move(500, 600)
-await page.mouse.down()
-await page.waitForTimeout(260)
-await page.mouse.up()
-await page.waitForTimeout(600)
-console.log('✓ pointer input accepted')
+// The shop must open, stock items, and complete a purchase.
+if (mid.phase === 'cleared') {
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(450)
+  const shopText = await page.textContent('#sheet')
+  if (!/Capital allocation/.test(shopText || '')) throw new Error('shop did not open: ' + shopText)
+  const cards = await page.locator('.shop-card').count()
+  if (cards < 1) throw new Error('shop had no stock')
+  console.log(`✓ shop opened with ${cards} items, capital $${mid.money}`)
+
+  const before = await page.evaluate(() => window.game['run'].money)
+  await page.locator('.shop-card').first().click()
+  await page.waitForTimeout(400)
+  // Banded and precise items open a chooser first; resolve whichever appears.
+  if (await page.locator('.target-row').count() > 0) {
+    await page.locator('.target-row').first().click()
+    await page.waitForTimeout(400)
+  } else if (/which third/.test((await page.textContent('#sheet')) || '')) {
+    await page.locator('.shop-card').first().click()
+    await page.waitForTimeout(400)
+  }
+  const got = await page.evaluate(() => ({
+    money: window.game['run'].money,
+    bought: window.game['run'].totals.itemsBought,
+  }))
+  if (got.bought < 1) throw new Error('purchase did not apply: ' + JSON.stringify(got))
+  console.log(`✓ bought an item: $${before} → $${got.money}, ${got.bought} owned`)
+}
+
 
 // Audio: the context must exist and be running after real user gestures.
 // A silently-suspended AudioContext is the classic autoplay-policy failure.
@@ -151,44 +169,6 @@ if (shook.peak < 0.02) throw new Error('punch() did not move the camera: ' + JSO
 console.log(`✓ screen shake displaces camera (peak ${shook.peak.toFixed(3)} world units)`)
 
 // ---------------------------------------------------------------------------
-// Pass 2: signal propagation must actually fire, and transforms must apply.
-// ---------------------------------------------------------------------------
-const sig = await page.evaluate(() => {
-  const g = window.game
-  const before = g.debug.report()
-  // Grant a spread of transforms and levels, then fire one pass and see
-  // whether signal-scored nodes appear.
-  g.debug.level(3)
-  g.debug.scatter('gelu', 4)
-  g.debug.scatter('residual', 4)
-  g.debug.scatter('layer-norm', 3)
-  g.debug.bucket(0, 4, 'top-k')
-  return { before, after: g.debug.report() }
-})
-if (!sig.after || sig.after.avgLevel !== 3) throw new Error('debug level grant failed: ' + JSON.stringify(sig.after))
-if (!sig.after.transforms.gelu) throw new Error('transform grant failed: ' + JSON.stringify(sig.after.transforms))
-console.log(`✓ transforms applied: ${JSON.stringify(sig.after.transforms)}`)
-console.log(`✓ buckets: ${sig.after.buckets.join(' | ')}`)
-
-// Fire a pass and confirm signal-scored nodes outnumber contacts.
-await page.waitForFunction(() => window.game?.['run']?.phase === 'aim', { timeout: 20000 }).catch(() => {})
-const beforePins = await page.evaluate(() => window.game['run'].totals.pinsStruck)
-await page.keyboard.down(' ')
-await page.waitForTimeout(300)
-await page.keyboard.up(' ')
-await page.waitForFunction(() => window.game?.['run']?.phase !== 'resolving', { timeout: 25000 }).catch(() => {})
-await page.waitForTimeout(500)
-const afterPins = await page.evaluate(() => window.game['run'].totals.pinsStruck)
-const lit = afterPins - beforePins
-if (lit < 8) throw new Error(`propagation did not fire: only ${lit} nodes lit in one pass`)
-console.log(`✓ forward pass lit ${lit} nodes from one launch`)
-
-if (process.env.ACTION_SHOT) {
-  await page.screenshot({ path: 'tools/signal.png' })
-  console.log('✓ signal shot written to tools/signal.png')
-}
-
-// ---------------------------------------------------------------------------
 // Full-run drive: the overlay -> upgrade -> next-stage path is the part the
 // headless sim cannot cover, because it lives entirely in DOM and orchestration.
 // Hammer it until the run actually ends.
@@ -196,22 +176,22 @@ if (process.env.ACTION_SHOT) {
 console.log('\n→ driving a full run to completion')
 let guard = 0
 let lastStage = 0
-while (guard++ < 500) {
+while (guard++ < 900) {
   const st = await page.evaluate(() => ({
     phase: window.game?.['run']?.phase,
-    stage: window.game?.['run']?.stage,
+    stage: window.game?.['run']?.benchmarkIndex,
     open: document.getElementById('overlay')?.classList.contains('on'),
   }))
 
   if (st.stage !== lastStage) {
-    console.log(`  → stage ${st.stage}`)
+    console.log(`  → benchmark ${st.stage + 1}`)
     lastStage = st.stage
   }
 
-  if (st.phase === 'run-win' || st.phase === 'run-fail') {
+  if (st.phase === 'ipo' || st.phase === 'collapsed') {
     console.log(`✓ run ended: ${st.phase} on stage ${st.stage}`)
     const sheet = await page.textContent('#sheet')
-    if (!/SIGNAL COLLAPSE|FRONTIER REACHED/.test(sheet || '')) {
+    if (!/THE BUBBLE POPS|IPO/.test(sheet || '')) {
       throw new Error('run-end sheet did not render: ' + (sheet || '').slice(0, 120))
     }
     console.log('✓ run-end sheet rendered')
@@ -220,14 +200,19 @@ while (guard++ < 500) {
   }
 
   if (st.open) {
-    // Stage intro and stage clear take Enter; the upgrade sheet takes 1-3.
-    await page.keyboard.press(st.phase === 'upgrade' ? '1' : 'Enter')
-    await page.waitForTimeout(140)
+    // Brief and clear take Enter; the shop must be left explicitly.
+    if (st.phase === 'shop') {
+      const leave = page.locator('.btn', { hasText: 'CONTINUE' })
+      if (await leave.count()) await leave.first().click()
+      else await page.keyboard.press('Enter')
+    } else {
+      await page.keyboard.press('Enter')
+    }
+    await page.waitForTimeout(170)
     continue
   }
 
   if (st.phase === 'aim') {
-    await page.keyboard.press('2')
     await page.keyboard.down(' ')
     await page.waitForTimeout(170)
     await page.keyboard.up(' ')

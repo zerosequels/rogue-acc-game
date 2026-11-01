@@ -1,9 +1,11 @@
 # rogue/acc
 
-A browser-based neural pachinko roguelike. The machine is a large language
-model: tokens cascade through weights, you set the sampling temperature before
-every forward pass, and each stage is a benchmark you have to exceed before
-your activation pool runs dry.
+A browser-based neural pachinko roguelike. The board is a language model you
+own and upgrade across a run: tokens of training data cascade through its
+weights, activation propagates down the network, and every output token you
+hit is a benchmark contribution. Clear eight funding rounds and you IPO — you
+cash out and the bubble pops *after* you are rich. Miss a benchmark and it
+pops while you are still holding.
 
 Three.js · TypeScript · Vite · Rapier2D · pure client-side, no backend.
 
@@ -11,7 +13,7 @@ Three.js · TypeScript · Vite · Rapier2D · pure client-side, no backend.
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173
+npm run dev          # http://127.0.0.1:5173
 ```
 
 | Script | What it does |
@@ -19,63 +21,64 @@ npm run dev          # http://localhost:5173
 | `npm run dev` | Dev server with HMR on http://127.0.0.1:5173 |
 | `npm run dev:lan` | Same, exposed on your local network (test on a phone) |
 | `npm run build` | Typecheck, then production bundle into `dist/` |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run sim` | **Headless balance sweep** — see [Tuning](#tuning) |
-| `npm run upgrades` | **Upgrade marginal-value audit** — measures every pick against the +40% budget |
-| `npm run propagation` | **Signal retention sweep** — the forward pass tuned by measurement |
-| `npm run shot` | Build, then screenshot the board mid-propagation |
+| `npm run typecheck` | `tsc --noEmit` (covers `src` **and** `tools`) |
+| `npm run sim` | **Full-run sweep** — plays complete runs headlessly |
+| `npm run upgrades` | **Shop audit** — every item's measured value per dollar |
+| `npm run propagation` | **Signal retention sweep** |
 | `npm run smoke` | Build, then drive the real game in headless Chromium |
+| `npm run shot` | Build, then screenshot the board mid-propagation |
+
+> **If `localhost:5173` refuses to connect:** Node 17+ binds the IPv6 loopback
+> only, so the server lands on `[::1]` while the browser resolves `localhost`
+> to `127.0.0.1`. `vite.config.ts` pins IPv4 to prevent this.
 
 ---
 
 ## How it plays
 
-Aim with the mouse or `◄ ►`, hold `SPACE` (or click) to charge, release to fire
-a token into the network. It cascades through the weights, each distinct weight
-it strikes scores, and the multiplier climbs the longer the cascade runs. Beat
-the stage's benchmark target before you run out of activations.
+Aim with the mouse or `◄ ►`, hold `SPACE` to charge, release to fire. You do
+not choose what you fire — the draw queue does — so aim is your only response
+to what arrives.
 
 | Key | Action |
 | --- | --- |
 | `◄ ►` / `A D` / mouse | Aim |
-| `SPACE` / click | Charge and fire (auto-fires at full charge) |
-| `1`–`4` | Select sampling temperature |
-| `E` | Agentic Override — redirect a token mid-flight (if unlocked) |
-| `M` | Mute / unmute audio (persists) |
+| `SPACE` / click | Charge and fire |
+| `E` | Agentic Override — redirect a token mid-flight (if owned) |
+| `M` | Mute (persists) |
 | `R` | New run |
-| `Enter` / `1`–`3` | Operate any overlay without the mouse |
+| `Enter` / `1`–`4` | Operate any sheet without the mouse |
 
-> **If `localhost:5173` refuses to connect:** Node 17+ binds the IPv6 loopback
-> only, so the server ends up on `[::1]` while the browser resolves `localhost`
-> to `127.0.0.1`. `vite.config.ts` pins `host: '127.0.0.1'` to prevent this.
+**The run.** Eight funding rounds (Pre-Seed → IPO), three benchmarks each,
+a shop after every one. Twenty-four benchmarks, twenty-four shop visits.
+Frontier Claims from Seed onward carry a **boss modifier** — Compute Shortage
+cuts your activations, Distribution Shift kills the bottom layers, Context
+Collapse halves signal decay, Data Contamination stops buckets paying.
+
+**Money.** One dollar is one billion dollars. You earn it from clearing,
+overshooting, unspent activations, and **interest** — which is what makes the
+economy a decision rather than an accumulator. Past the interest cap, hoarding
+earns nothing and the money belongs in the board.
 
 ---
 
-## Audio
+## The shop: precision is the price
 
-Entirely procedural — no asset files, no loading, no licensing. Every sound is
-built from oscillators and filtered noise in `src/audio/sound.ts`.
+The same effect costs more when you get to say where it lands.
 
-The voice that matters is `pinTick`, because a pachinko game lives on the tick
-of each weight. **Its pitch climbs a pentatonic scale with chain length**, so a
-long cascade is an ascending run of notes — the audio equivalent of the
-multiplier ladder, and the thing that makes a long cascade *feel* long.
+| Precision | You choose | Cost | What it buys |
+| --- | --- | --- | --- |
+| **Blind** | nothing | ×1.0 | breadth — sprays across many weights |
+| **Banded** | upper / middle / lower third | ×1.6 | depth where it matters |
+| **Precise** | the exact weight, token or card | ×2.5 | combos — GELU above an attention head |
 
-Three constraints shaped it:
+That reconciles a Balatro-style shop (choosing what to buy *is* the game) with
+upgrades that land unpredictably: **you control what you build, the machine
+decides where it lands — unless you pay.**
 
-- **Autoplay policy.** An `AudioContext` created before a user gesture starts
-  suspended and stays silent forever. It is created lazily on first input and
-  re-resumed on every subsequent gesture, since browsers re-suspend on tab
-  backgrounding.
-- **Density.** A wide cascade can register dozens of strikes a second.
-  `pinTick` is rate-limited to 4 per frame with a 12 ms floor between voices,
-  and every voice disposes itself on `onended`. Without that the mix turns to
-  mud and the main thread spends its budget constructing oscillators.
-- **Escalation.** Temperature brightens the timbre (triangle → square) and
-  detunes it, so Rogue sampling *sounds* unstable.
-
-Mute with `M` or the button bottom-right; the preference persists in
-`localStorage`.
+One exception, deliberately: **card removal is always precise.** Random
+deletion is pure frustration, and thinning only reads as a decision when you
+choose what leaves.
 
 ---
 
@@ -116,85 +119,72 @@ is already scored, so the ball's later contacts on it do nothing.
 At 0.45 a forward pass lights 27 of 68 nodes and signal contributes about two
 thirds of the score — propagation is the scoring core, not a garnish.
 
-## The one design decision worth explaining
+## Two design decisions worth explaining
 
-**There is no Frenzy meter, and that is deliberate.**
+### There is no Frenzy meter, and no temperature either
 
-The original brief called for a Frenzy system that builds during dense cascades
-and multiplies score. The problem is not that it would be pure upside — that is
-fixable with numbers. The problem is that **a meter which fills during a cascade
-is something the player watches, not something the player decides.** Your entire
-input surface in a pachinko game is aim, charge, and fire. Adding a bar that
-fills on its own does not add a decision; it adds an animation.
+**Frenzy** was in the original brief: a meter that builds during dense cascades
+and multiplies score. It was cut, and the reason is not balance. A meter that
+fills during a cascade is something the player *watches*, not something the
+player *decides* — and in a pachinko game your entire input surface is aim,
+charge, fire. Adding a bar that fills on its own does not add a decision; it
+adds an animation.
 
-So temperature replaces it. You choose it *before* each pass:
+**Temperature** replaced it for one version: a sampling parameter you set
+before each shot, trading bounciness and score against activation cost. That
+was a real decision, and it worked. It was cut anyway when the deck arrived,
+because the deck does the same job better: risk is now something you *build*
+(what you put in your corpus) rather than something you dial in before each
+shot. Synthetic Gen rolls its value every launch; Unverified Source triples it
+against a one-in-five total loss. The gamble moved from a slider into the
+economy.
 
-| Tier | Bounce | Score | Cost |
-| --- | --- | --- | --- |
-| 0.2 Greedy | ×0.8 | ×1.0 | 1 activation |
-| 0.7 Balanced | ×1.0 | ×1.4 | 1 activation |
-| 1.3 Creative | ×1.25 | ×2.0 | 2 activations |
-| 2.0 Rogue *(locked)* | ×1.5 | ×3.0 | 3 activations |
+### Signal is a bonus, not a consumption
 
-Higher temperature makes tokens genuinely bouncier — they strike more weights,
-with far more variance, and get flung into dead neurons more often. It costs
-more activations, paid from the same pool that limits the whole run. That is a
-real bet, made every single pass, with the escalating glitch-and-bloom payoff
-the brief wanted. And "temperature" is *literally* a pre-generation sampling
-parameter, so the metaphor got more correct rather than less.
+Signal activations originally marked nodes as struck, exactly like a ball
+contact. The sweep showed the cost immediately: contacts per pass fell from
+10.0 to 4.3 as retention rose, because **the ball was being starved by its own
+network** — the first contact ate most of the board and every later contact
+found it spent.
 
-The measured payoff, from `npm run sim`:
-
-```
-tier        cost   p10     p50     p90     max
-0.2 Greedy     1      70     155     333    1200
-0.7 Balanced   1     140     277     945    2450
-1.3 Creative   2      40     420    1750    4450
-2.0 Rogue      3      30     668    2145    9640
-```
-
-Balanced returns **277 per activation**; Rogue returns **223**. The hot tiers
-are a worse bet on expectation and a far better one on ceiling — exactly the
-shape a gamble should have. Note the p10 column: Rogue's floor is *lower* than
-Greedy's, because a wild token can whiff entirely.
+Signal now does not consume the node, and does not advance the multiplier
+tier. The ladder stays a measure of how well you **aimed**; signal measures how
+well your network is **wired**. Keeping them separate is what stops a good
+build from erasing the skill component.
 
 ---
 
 ## Where the balance values live
 
-**`src/config/balance.ts` is the only file with gameplay constants in it.**
-Nothing else in the codebase contains a magic number you would want to tune.
+**`src/config/balance.ts` is the only file with physics and scoring constants
+in it.** Round targets live in `config/rounds.ts`, shop prices in
+`config/shop.ts`. Nothing else contains a magic gameplay number.
 
-The three values that matter most, and the invariant tying them together:
+The invariant everything hangs off:
 
 ```
-BASE_PIN_VALUE      10      the unit of all scoring
-BENCHMARK_GROWTH    1.4     how fast stage targets escalate
-upgrade strength    ~+40%   how fast player power escalates
+ROUNDS.growth       1.285   how fast benchmark targets escalate
+purchases/benchmark ~2      how often you can intervene
+=> each purchase must move total power ~19%
 ```
 
-Targets grow 1.4× per stage across 8 stages, and the player gets 7 upgrade
-picks, so they must get ~10.5× stronger (1.4⁷). **If you change
-`STAGES.growth`, upgrade strength in `src/config/upgrades.ts` has to move with
-it** or the back half of the run becomes unwinnable. This coupling is the single
-most important invariant in the game and it is commented at both ends.
-
-Other dials worth knowing:
+**If you change `ROUNDS.growth`, shop item strength has to move with it** or
+the back half of the run becomes unwinnable — the full-run sweep showed
+exactly that, with pace drifting from 3 passes to 11 and every run dying at
+Series A. This is the single most important coupling in the game and it is
+commented at both ends.
 
 | Where | What |
 | --- | --- |
-| `STAGES.baseTarget` | Stage 1 target (2,200). Calibrated so a stage costs ~8 passes, which exactly matches the +8 clear refund — a competently played stage breaks even on activations. |
-| `ECONOMY` | One pool for the whole run, not per stage. Start 20, cap 30, +8 per clear, +3 for a 50% overshoot. |
-| `ORB.restitution` | Base bounciness at Balanced. The main dial for how lively the whole board feels. Colliders combine with `CoefficientCombineRule.Max`, so this × the tier's `bounce` is what actually governs it. |
-| `SCORE.tierMultipliers` / `tierThresholdSteps` | The multiplier ladder. Thresholds are multiples of `pinsPerTier` so the Residual Amplifier upgrade compresses the whole ladder without needing a second table. |
-| `BOARDGEN` | Pin counts, layer counts, pocket counts, placement jitter. |
-| `VALIDATOR` | Playability thresholds. See below. |
-| `VISUAL` / `COLORS` | Bloom, glitch ceiling, camera padding, palette. |
-
-Adding an upgrade means appending one entry to `UPGRADES` in
-`src/config/upgrades.ts`. Every upgrade is data plus one `apply(mods)` function
-that mutates a flat `Mods` bag; nothing in the sim or render layer knows any
-individual upgrade exists.
+| `SIGNAL` | Retention, floor, hop cap. The most dangerous numbers here |
+| `PROGRESSION` | Level caps and the bucket multiplier step |
+| `TRANSFORMS` | Every node and bucket transform's payout |
+| `DECK` | Starting deck size, card level step, transform parameters |
+| `ECONOMY` | Activations per benchmark, payouts, interest, caps |
+| `ROUNDS` | Target curve, payouts, boss assignment |
+| `SHOP` | Stock size, reroll pricing |
+| `BOARDGEN` | The lattice: 9 layers, 8 per row, edge wiring odds |
+| `VISUAL` / `COLORS` | Bloom, glitch ceiling, shake, palette |
 
 ---
 
@@ -227,49 +217,48 @@ board fallbacks     0%
 Read it as: an unskilled random-aim bot should win *rarely but not never*. If a
 bot that does not aim clears most runs, the game has no skill ceiling.
 
-### Upgrade audit
+### Shop audit
 
-`npm run upgrades` measures every upgrade (and every stack of it) against the
-+40% budget by simulating passes with and without it on identical boards and
-inputs. It found three defects the full-run sweep could not isolate:
+`npm run upgrades` applies every shop item to a fresh board and measures what
+it actually did to a median pass, reporting **dollars per 10% of power**. An
+item is priced well when it costs about the same per unit of power as its
+neighbours; a conspicuously cheap row is an auto-buy and a dear one is never
+worth taking.
 
-- **New Attention Head** compounded per-token value by 0.7 while token count
-  grew linearly: stack 2 measured **+169%**, stack 3 **−17%** — a pick that
-  made you strictly weaker. Per-token value is now recomputed so total pass
-  value is exactly `1.4^stacks`, which meets the budget by construction and
-  makes a negative stack impossible.
-- **The multiplier ladder was shared across a whole pass**, so three tokens
-  reached a tier one token cannot — buying free multiplier with token count.
-  The ladder is now normalised by token count, so it measures cascade quality.
-- **The spike pocket multiplies the whole pass**, so every extra token was
-  another lottery ticket on the same jackpot. The bonus portion is now divided
-  across the pass, keeping expected spike value flat in token count.
+It has found a defect every time it has been run. Most recently:
 
-**Prune Dead Neurons** was also strictly negative (−7%: lost strikes outweighed
-the value bump) and is now 15% pruned for +50% value.
+- **Deduplicated did literally nothing.** It granted `+1 maxHops` — but
+  `maxHops` never binds, because the decay *floor* always stops a wave first.
+  Measured at exactly 0%. It now lowers the floor instead.
+- **Transform purchases were worthless.** One node of 68 measured +0–4% at
+  $12–24 per 10%, against level purchases at $1.5. Blind and banded transforms
+  now hit several weights; precise ones hit one, hard.
+- **Precision was strictly dominated.** `+4 levels to one weight` (+4%) lost
+  outright to `+1 level to ten weights` (+14%) at the same price. Precision
+  has to buy real depth if it is not buying breadth.
 
-### The blind spot that was hiding a trap
+Items the audit *structurally cannot* measure — anything paying out on a later
+pass, anything variance-based, anything paying money instead of score — are
+labelled `n/a` with the reason rather than being mislabelled as traps.
 
-Chain Reaction and Explosive Weights originally read **exactly 0%** in the
-audit — not because they did nothing, but because their effects lived in
-`core/game.ts`, on the far side of the sim/render split, where the headless
-harness could never execute them. Two of sixteen upgrades were structurally
-unmeasurable.
+### The blind spot that kept producing traps
 
-Both now live in `src/sim/effects.ts`, called by `game.ts` *and* by both
-harnesses. The moment they became measurable, **Explosive Weights turned out to
-be −28%** — a severe trap. It destroyed weights *permanently*, so paying 0.75×
-once deleted a weight for every remaining pass of the stage and silently
-degraded the board as the stage went on. Detonated weights now reform at the
-start of the next pass and pay 2× instead, measuring +22% / +46%.
+Twice now, code has been invisible to the harness and wrong because of it.
 
-The lesson is architectural, not numerical: **anything on the wrong side of the
-sim boundary cannot be tested, and what cannot be tested will eventually be
-wrong.**
+First, Chain Reaction and Explosive Weights lived in `core/game.ts`, on the
+far side of the sim/render split where the headless harness could never run
+them. Both read exactly 0%. Moved into `src/sim/effects.ts`, Explosive Weights
+immediately measured **−28%** — it destroyed weights *permanently*, so paying
+once deleted a weight for every remaining pass of the benchmark.
 
-Upgrades the audit legitimately cannot measure (economy picks, aim aids, hot-tier
-upgrades at a Balanced baseline) are now labelled `n/a` with the reason, rather
-than being mislabelled as traps.
+Second, `tools/` was outside `tsconfig.json`. Both harnesses silently rotted
+through the v2 refactor and only failed at runtime, and `tools/upgrades.ts`
+spent a while auditing a *deleted* upgrade catalogue. `tools/` is now
+typechecked with `src`.
+
+The lesson is the same both times: **anything on the wrong side of a
+measurement boundary cannot be tested, and what cannot be tested will
+eventually be wrong.**
 
 The sim layer imports nothing from Three.js or the DOM, which is what makes the
 harness possible. **Keep it that way.**
@@ -331,42 +320,52 @@ layouts. cannon-es makes no such guarantee.
 ```
 src/
   config/
-    balance.ts      ALL gameplay constants. The only tuning surface.
-    upgrades.ts     16 upgrades across 4 archetypes, pure data + apply(mods)
-  audio/
-    sound.ts        procedural WebAudio — no assets, rate-limited voices
+    balance.ts      physics, scoring, signal, economy constants
+    rounds.ts       8 funding rounds x 3 benchmarks, and the bosses
+    shop.ts         38 shop items and the precision pricing axis
+    mods.ts         the flat Mods bag the sim reads
   core/
-    rng.ts          seeded sfc32, derived streams, seed minting
-    state.ts        run model + phase machine. Knows no Three.js, no Rapier, no DOM.
-    game.ts         orchestration: owns physics, views, HUD, frame loop
+    rng.ts          seeded sfc32, derived streams
+    state.ts        run model + phase machine. No Three.js, no Rapier, no DOM
+    shopkeeper.ts   rolling stock, resolving targets, applying purchases
+    game.ts         orchestration: physics, views, HUD, frame loop
   sim/              HEADLESS — imports nothing from Three.js or the DOM
-    board.ts        inert board description (geometry + metadata)
-    boardgen.ts     procedural generation, layer patterns, fallback board
-    validator.ts    headless playability probing
+    board.ts        inert network description
+    boardgen.ts     the fixed lattice; the seed varies wiring and start state
+    validator.ts    headless playability probing, once per run
     physics.ts      Rapier2D wrapper, fixed timestep, velocity clamping
-    effects.ts      upgrade effects that act on the sim (splits, detonations)
-    launcher.ts     aim, charge, temperature selection, trajectory preview
-    scoring.ts      multiplier ladder, pass accumulation, spike resolution
+    propagation.ts  the forward pass
+    scoring.ts      node values, transforms, buckets, pass accumulation
+    effects.ts      upgrade effects acting on the sim (splits, detonations)
+    deck.ts         training data: types, levels, transforms, draw queue
+    launcher.ts     aim, charge, the chambered card
   render/
-    scene.ts        renderer, ortho camera, bloom + glitch post chain
-    boardView.ts    instanced weight meshes, rails, pockets
-    orbView.ts      tokens, trails, launcher visuals
-    background.ts   procedural circuit/glyph substrate shader
+    scene.ts        renderer, ortho camera, bloom + glitch, screen shake
+    boardView.ts    instanced rings, hairline edges, glyph label layer
+    orbView.ts      tokens, trails, launcher
+    background.ts   blueprint-grid substrate
+  audio/
+    sound.ts        procedural WebAudio, no assets
   ui/
     hud.ts          DOM heads-up display
-    overlays.ts     stage intro / clear / upgrade / run end sheets
+    overlays.ts     brief / cleared / shop / run end
   flavor/
-    text.ts         all player-facing copy, seeded selection
+    text.ts         player-facing copy, seeded selection
 tools/
-  simulate.ts       headless balance harness
+  simulate.ts       full-run sweep
+  upgrades.ts       shop item value audit
+  propagation.ts    signal retention sweep
   smoke.mjs         real-browser runtime test
+  shot.mjs          screenshot the board mid-propagation
 ```
 
 Responsibility split, so each file stays readable:
 
-- `state.ts` decides the **rules** — can I afford this, did I clear?
+- `state.ts` decides the **rules** — can I fire, did I clear, what did I earn?
 - `scoring.ts` decides the **points** — what is this weight worth right now?
+- `propagation.ts` decides the **spread** — what else did that light up?
 - `physics.ts` decides the **motion** — where did the token go?
+- `shopkeeper.ts` decides the **market** — what is for sale, what does it do?
 - `game.ts` decides the **order** — what happens next, and who gets told?
 
 ### Two invariants the physics layer enforces
@@ -418,31 +417,27 @@ Set `ACTION_SHOT=1` to also write `tools/board.png` and `tools/action.png`.
 
 ## Scope
 
-**In:** full playable run loop, 8 stages, procedural boards with validation,
-temperature system, activation economy, benchmark objectives, 16 upgrades,
-seeded determinism, themed placeholder visuals, HUD, headless balance harness,
-browser smoke test.
+**In:** the full v2 loop — 8 funding rounds x 3 benchmarks, persistent
+upgradeable board, signal propagation, per-card deck with random draw, shop
+with three precision tiers, money with interest, boss modifiers, seeded
+determinism, wireframe art direction, procedural audio, three headless
+harnesses and a browser smoke test.
 
-**Out:** meta-progression between runs, audio, boss models, real benchmark data
-or API calls.
+**Out:** meta-progression between runs, endless mode past IPO, music.
 
 ### Known rough edges
 
 - **The bundle is ~4 MB.** `@dimforge/rapier2d-compat` inlines its WebAssembly
-  as base64, which is the price of not needing a wasm loader plugin. Switching
-  to `@dimforge/rapier2d` with a wasm plugin would cut it substantially.
-- **The unskilled win rate is 16.7%, and the stage distribution is bimodal** —
-  most bot runs die on stages 2–3, a tail reaches stage 8. That is the upgrade
-  snowball outpacing 1.4× growth once a run gets going, which is correct for a
-  roguelike but means late stages are easier than mid ones. Raising
-  `STAGES.growth` toward 1.45 would flatten it.
-- **Trajectory preview is ballistic, not collision-accurate.** Deliberate — the
-  flavour text says "roughly", and an exact preview would remove the tension
-  that makes aiming interesting.
-- Explosive Weights does not chain into further detonations, by design.
-- **No pause.** `R` restarts; there is no way to freeze a run.
-- **Nothing persists between runs** beyond the mute preference — no best score,
-  no run history.
-- **Spike magenta vs drain red is a colourblind hazard.** They should differ by
-  shape or label, not only hue.
-- **Not responsive.** The temperature rail and HUD assume a desktop viewport.
+  as base64. Switching to `@dimforge/rapier2d` with a wasm plugin would cut it.
+- **Pace still drifts late.** 3 passes at Pre-Seed, ~11 by Series E. That is a
+  defensible difficulty curve rather than flat, but it is not the 6-8 band the
+  design aimed for across the whole run.
+- **Several shop items are unmeasurable by the audit** and are judged only on
+  the full-run sweep — anything that pays out on a *later* pass, depends on
+  variance, or pays money instead of score. They are listed with reasons in
+  `tools/upgrades.ts`.
+- **Trajectory preview is ballistic, not collision-accurate.** Deliberate.
+- **No pause**, no persistence between runs beyond the mute preference.
+- **Spike magenta vs drain red is a colourblind hazard** — they should differ
+  by shape, not only hue.
+- **Not responsive.** The deck rail and HUD assume a desktop viewport.

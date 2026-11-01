@@ -144,6 +144,37 @@ export const SCORE = {
 } as const
 
 // ---------------------------------------------------------------------------
+// The deck — training data.
+//
+// Deck size and activations are separate resources: activations are how many
+// shots a benchmark gives, the deck is what those shots fire.
+// ---------------------------------------------------------------------------
+
+export const DECK = {
+  /** 4 types x 4 = 16 cards. Small enough that deleting one is a visible 6%
+   *  shift in your odds, which is what makes thinning a real decision. */
+  startingPerType: 4,
+  /** Card value is `typeMult * (1 + levelStep * (level - 1))`. */
+  levelStep: 0.25,
+  maxLevel: 10,
+  maxTransformsPerCard: 2,
+  /** How many upcoming cards the HUD shows. */
+  previewCount: 2,
+
+  poisonedMult: 3,
+  poisonedDudChance: 0.2,
+  distilledMult: 0.78,
+  /** Deduplicated lowers the signal FLOOR by this many hops' worth of decay,
+   *  which is what actually extends a wave. Raising maxHops does nothing —
+   *  the floor always binds first. */
+  dedupExtraHops: 1,
+  /** Web-Scale contacts count this much toward the tier ladder. */
+  webScaleTierWeight: 2,
+  /** Curated guarantees at least this fraction of the pass median. */
+  curatedFloor: 0.6,
+} as const
+
+// ---------------------------------------------------------------------------
 // Signal propagation — the v2 scoring core.
 //
 // A struck node fires its downward edges. Nodes in the layer below score
@@ -232,46 +263,47 @@ export const TRANSFORMS = {
 // ---------------------------------------------------------------------------
 
 export const ECONOMY = {
-  startingActivations: 20,
+  /** Forward passes per benchmark, before boss modifiers and shop upgrades. */
+  activationsPerBenchmark: 10,
+  startingMoney: 6,
+
+  /** Overshoot: +$1 per this much over target... */
+  overshootPer: 0.5,
+  /** ...up to this many dollars. */
+  overshootCap: 5,
+
+  /** Interest: +$`interestAmount` per $`interestPer` held, capped.
+   *  The cap is the important half — past $25 held, hoarding earns nothing
+   *  and the money belongs in the board. That is what makes it a decision. */
+  interestPer: 4,
+  interestAmount: 1,
+  interestCap: 8,
+
+  /** Unspent activations pay $1 each, capped. Finishing early pays. */
+  unspentCap: 6,
+
+  /** HUD turns red at or below this many activations. */
+  lowWarning: 3,
+
+  /** Retained for the legacy Mods pool fields; the deck replaced the pool. */
+  startingActivations: 10,
   startingMaxPool: 30,
-  /** Refund on clearing a stage. */
   stageClearRefund: 8,
-  /** Bonus for exceeding the target by `overshootThreshold`. */
   overshootThreshold: 1.5,
   overshootBonus: 3,
-  /** HUD turns red at or below this many activations. */
-  lowWarning: 5,
 } as const
 
 // ---------------------------------------------------------------------------
-// Temperature — a PER-LAUNCH choice, not a meter that fills on its own.
+// Temperature was cut in v2.
 //
-// This is the game's central decision. Higher temperature makes orbs bouncier
-// (more pins struck, far more variance) and multiplies score, but costs more
-// activations per launch. Low temperature is a predictable grind; Rogue is a
-// three-activation gamble. The name is literal: it is a sampling parameter you
-// set before generation.
+// It was the per-launch decision in v1 — a pre-generation sampling parameter
+// you set before every shot. The deck replaces it: what you fire is decided
+// by the draw queue, and your only response is where you aim. Risk became
+// something you BUILD rather than something you dial.
+//
+// Nothing references TEMPERATURES any more. If you want a per-launch risk
+// dial back, it belongs on the card, not on a slider.
 // ---------------------------------------------------------------------------
-
-export interface TemperatureTier {
-  readonly value: number
-  readonly name: string
-  /** Multiplies orb + pin restitution. */
-  readonly bounce: number
-  readonly scoreMult: number
-  readonly cost: number
-  readonly locked: boolean
-  readonly blurb: string
-}
-
-export const TEMPERATURES: readonly TemperatureTier[] = [
-  { value: 0.2, name: 'Greedy', bounce: 0.8, scoreMult: 1.0, cost: 1, locked: false, blurb: 'argmax. predictable. dull.' },
-  { value: 0.7, name: 'Balanced', bounce: 1.0, scoreMult: 1.4, cost: 1, locked: false, blurb: 'the shipping default.' },
-  { value: 1.3, name: 'Creative', bounce: 1.25, scoreMult: 2.0, cost: 2, locked: false, blurb: 'wider distribution. wilder bounce.' },
-  { value: 2.0, name: 'Rogue', bounce: 1.5, scoreMult: 3.0, cost: 3, locked: true, blurb: 'unaligned sampling. no guardrails.' },
-]
-
-export const DEFAULT_TEMP_INDEX = 1
 
 // ---------------------------------------------------------------------------
 // Stage targets: 1.4x growth. See the coupling note at the top of this file.
@@ -416,4 +448,6 @@ export const COLORS = {
   edge: 0x4fd8ff,
   drainLine: 0xd3405a,
   pocketLine: 0x4d8fc4,
+  /** Layers rendered inert by a boss modifier. */
+  inert: 0x2a2f38,
 } as const

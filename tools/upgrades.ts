@@ -1,49 +1,59 @@
 /**
- * tools/upgrades.ts — marginal value audit for the upgrade catalogue.
+ * tools/upgrades.ts — shop item marginal-value audit.
  *
- * `balance.ts` claims every upgrade should be worth roughly +40% effective
- * power, because stage targets grow 1.4x across 7 picks. That claim was never
- * measured — this measures it.
- *
- * For each upgrade (and each stack of it) we simulate N passes on real boards
- * with and without it applied, and report the delta in median pass score. An
- * upgrade well under the bar is a trap pick; one well over trivialises the run.
+ * Every purchase has to move total power by roughly the same factor the
+ * benchmark curve grows by, divided across the purchases a player can afford
+ * per benchmark. This applies each shop item to a fresh board and measures
+ * what it actually did to a median pass.
  *
  *   npm run upgrades
- *   npm run upgrades -- 10     # 10 boards per measurement (slower, tighter)
+ *   npm run upgrades -- 8
+ *
+ * v1's version audited a hand-written upgrade list. The shop replaced that
+ * list, and this tool was briefly left measuring code the game no longer ran —
+ * which is exactly why `tools/` is now inside `tsconfig.json`.
  */
 
-import { ECONOMY, LAUNCH, ORB, PHYSICS, TEMPERATURES, VALIDATOR } from '../src/config/balance'
-import { baseMods, UPGRADES, type Mods, type Upgrade } from '../src/config/upgrades'
+import { ECONOMY, LAUNCH, ORB, PHYSICS, VALIDATOR } from '../src/config/balance'
+import { benchmarkAt } from '../src/config/rounds'
+import { priceOf, SHOP_ITEMS, type ShopItemDef } from '../src/config/shop'
 import { deriveRng, type Rng } from '../src/core/rng'
+import { RunState } from '../src/core/state'
+import { applyPurchase, type Offer } from '../src/core/shopkeeper'
 import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
-import { computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
-import { resolveCriticalStrike } from '../src/sim/effects'
+import {
+  computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext,
+} from '../src/sim/scoring'
 import { buildSignalGraph, makeSignalResult, propagate } from '../src/sim/propagation'
+import { resolveCriticalStrike } from '../src/sim/effects'
 import { isAttentionHead, type Board } from '../src/sim/board'
+import { CARD_TYPES, cardValue } from '../src/sim/deck'
 
-const BOARDS = Number(process.argv[2] ?? 6)
+const BOARDS = Number(process.argv[2] ?? 5)
 
 /**
- * Upgrades this harness CANNOT measure, and why. They are not traps — the
- * measurement is a median pass score at Balanced temperature with random aim,
- * which is structurally blind to each of these. Judge them on `npm run sim`
- * (economy) or by playing (aim, hot tiers).
+ * Items this harness structurally cannot measure, and why. They are not
+ * traps — the measurement is a median single pass with a fixed card, which
+ * is blind to each of these. Judge them on `npm run sim`.
  */
 const UNMEASURABLE: Record<string, string> = {
-  'context-extension': 'buys passes, not pass score',
-  'speculative-decoding': 'buys passes, not pass score',
-  'attention-mask': 'aim aid; bot aims randomly',
-  'benchmark-overfit': 'spike odds; rare events do not move a median',
-  'temperature-spike': 'hot tiers only; measured at Balanced',
-  'hallucination-engine': 'gated at temp >= 1.3; measured at Balanced',
-  'agentic-override': 'manual player action; bot never uses it',
+  distil: 'pays off by being DRAWN more often; one fixed-card pass cannot see it',
+  'top-k-sampling': 'needs 15+ contacts in a pass; the random-aim bot averages 10',
+  'moe-router': 'wakes only when its layer is busy; random aim rarely loads one layer',
+  'beam-search': 'returns the token — the gain is an extra pass, not a bigger one',
+  'kv-cache': 'pays out on the FOLLOWING pass',
+  'checkpoint-save': 'pays out on the FOLLOWING pass',
+  'revenue-share': 'pays money, not score',
+  poison: 'triple value against a 1-in-5 total loss; variance, not mean',
+  'dedup-pass': 'extends signal only on passes that draw that one card',
+  'tokeniser-fix': 'splits only on passes that draw that one card',
+  curate: 'removes the floor; changes the low tail, not the median',
+  'web-scale': 'tier weighting only shows across a long pass',
+  epoch: 'spreads across 6 random cards; the fixed-card pass may miss all of them',
 }
-const PASSES_PER_BOARD = 30
-/** Measure at Balanced: the most activation-efficient tier, so the baseline. */
-const TEMP_INDEX = 1
+const PASSES = 24
 
 function median(xs: number[]): number {
   if (!xs.length) return 0
@@ -52,92 +62,75 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
 }
 
-function buildBoard(seed: string, _stage: number, mods: Mods): Board {
-  for (let attempt = 0; attempt < VALIDATOR.maxAttempts; attempt++) {
-    const board = generateBoard(boardRngFor(seed, attempt), `${seed}/a${attempt}`)
-    if (mods.pruneFraction > 0) {
-      const rng = deriveRng(seed, 'prune', attempt)
-      const ordinary = board.nodes.filter((n) => !isAttentionHead(n) && !n.removed)
-      for (const n of rng.sample(ordinary, Math.floor(ordinary.length * mods.pruneFraction))) {
-        n.removed = true
-      }
-    }
-    const stats = probeBoard(board, seed, attempt)
-    board.stats = stats
-    if (stats.accepted) return board
+function buildBoard(seed: string): Board {
+  for (let a = 0; a < VALIDATOR.maxAttempts; a++) {
+    const b = generateBoard(boardRngFor(seed, a), `${seed}/a${a}`)
+    b.stats = probeBoard(b, seed, a)
+    if (b.stats.accepted) return b
   }
-  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fallback`)
+  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fb`)
   last.stats = { ...probeBoard(last, seed, 0), fallback: true, accepted: true }
   return last
 }
 
-const detonated: { removed: boolean }[] = []
-
-function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, charge: number, rng: Rng): number {
-  const tier = TEMPERATURES[TEMP_INDEX]!
+function runPass(
+  world: PhysicsWorld, board: Board, run: RunState,
+  angle: number, charge: number, rng: Rng,
+): number {
+  const card = run.deck.cards[0]
+  if (!card) return 0
+  const def = CARD_TYPES[card.type]
+  const mods = run.mods
   const events = makeStepEvents()
   const pass = new Pass()
   const graph = buildSignalGraph(board)
   const sig = makeSignalResult()
   const ctx: ScoringContext = {
-    mods,
-    tempScoreMult: tier.scoreMult,
-    tempValue: tier.value,
-    rng,
-    layerBonus: computeLayerBonus(board),
+    mods, tempScoreMult: 1, tempValue: 0, rng, layerBonus: computeLayerBonus(board),
   }
 
-  // Explosive Weights removes pins during a pass; clear that before rebuilding
-  // so each measured pass starts from the same board the player would see.
-  for (const pin of detonated) pin.removed = false
-  detonated.length = 0
   world.loadBoard(board)
-  const speed = LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge
-  const count = Math.max(1, Math.min(mods.orbsPerLaunch, LAUNCH.maxOrbsHardCap))
-  for (let i = 0; i < count; i++) {
-    const off = count === 1 ? 0 : (i - (count - 1) / 2) * LAUNCH.multiOrbSpread
-    const a = Math.max(-LAUNCH.maxAngle, Math.min(LAUNCH.maxAngle, angle + off))
-    world.spawnOrb(Math.sin(a) * 0.45, LAUNCH.originY - 0.5, Math.sin(a) * speed, -Math.cos(a) * speed, {
-      restitution: ORB.restitution * tier.bounce,
-      launchId: 0,
-      scoreScale: mods.orbScoreMult,
-    })
-  }
+  const speed = (LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge) * def.speed
+  world.spawnOrb(
+    Math.sin(angle) * 0.45, LAUNCH.originY - 0.5,
+    Math.sin(angle) * speed, -Math.cos(angle) * speed,
+    { restitution: ORB.restitution * def.bounce, launchId: 0, scoreScale: cardValue(card) },
+  )
 
+  const detonated: { removed: boolean }[] = []
   const maxSteps = Math.ceil((ORB.maxLifetime + 2) / PHYSICS.dt)
   for (let s = 0; s < maxSteps && world.orbCount > 0; s++) {
     world.stepOnce(events)
     for (const h of events.pinHits) {
       const ev = scorePin(pass, h.pin, h.orb, ctx)
-      if (ev) propagate(graph, pass, h.pin, ctx, sig)
-      // Chain Reaction / Explosive Weights now live in the sim layer, so the
-      // harness can finally execute them — they used to read 0% because the
-      // implementation sat in core/game.ts, out of reach.
-      if (ev && isAttentionHead(h.pin)) {
-        const outcome = resolveCriticalStrike(world, pass, h.pin, h.orb, ctx, mods, ORB.restitution * tier.bounce)
-        for (const d of outcome.detonated) detonated.push(d.pin)
+      if (!ev) continue
+      if (isAttentionHead(h.pin)) {
+        const o = resolveCriticalStrike(world, pass, h.pin, h.orb, ctx, mods, ORB.restitution)
+        for (const d of o.detonated) detonated.push(d.pin)
       }
+      propagate(graph, pass, h.pin, ctx, sig)
     }
     for (const l of events.landings) scoreLanding(pass, l.pocket, l.orb, ctx)
+    if (pass.ended) break
   }
   world.despawnAllOrbs()
+  for (const p of detonated) p.removed = false
   return pass.score
 }
 
-/** Median pass score for a given mods configuration, over fixed boards/inputs. */
-function measure(world: PhysicsWorld, mods: Mods, label: string): number {
+/** Median pass score for a (run, board) pair, over fixed boards and inputs. */
+function measure(world: PhysicsWorld, make: () => { run: RunState; board: Board }, tag: string): number {
   const scores: number[] = []
   for (let b = 0; b < BOARDS; b++) {
-    const seed = `UPG-${b}`
-    const board = buildBoard(seed, 1, mods)
-    // Same input stream for every configuration, so differences are the
-    // upgrade and not the aim.
-    const rng = deriveRng('FIXED-INPUT', b)
-    const scoreRng = deriveRng(label, b)
-    for (let k = 0; k < PASSES_PER_BOARD; k++) {
-      const angle = rng.range(-LAUNCH.maxAngle, LAUNCH.maxAngle)
-      const charge = rng.range(0.5, 1.0)
-      scores.push(runPass(world, board, mods, angle, charge, scoreRng))
+    const { run, board } = make()
+    const input = deriveRng('FIXED-INPUT', b)
+    const roll = deriveRng(tag, b)
+    for (let k = 0; k < PASSES; k++) {
+      scores.push(runPass(
+        world, board, run,
+        input.range(-LAUNCH.maxAngle, LAUNCH.maxAngle),
+        input.range(0.5, 1.0), roll,
+      ))
     }
   }
   return median(scores)
@@ -146,45 +139,76 @@ function measure(world: PhysicsWorld, mods: Mods, label: string): number {
 async function main(): Promise<void> {
   await initPhysics()
   const world = new PhysicsWorld()
+  let boardIdx = 0
 
-  const base = baseMods(ECONOMY.startingMaxPool)
-  const baseline = measure(world, base, 'baseline')
-
-  console.log('='.repeat(84))
-  console.log('rogue/acc — upgrade marginal value audit')
-  console.log(`boards=${BOARDS}  passes/board=${PASSES_PER_BOARD}  tier=Balanced  baseline median=${baseline}`)
-  console.log('target: each pick worth about +40% (stage targets grow 1.4x over 7 picks)')
-  console.log('='.repeat(84))
-  console.log('\nupgrade                      stack  median   vs base   marginal   verdict')
-
-  for (const up of UPGRADES) {
-    const mods = baseMods(ECONOMY.startingMaxPool)
-    let prev = baseline
-    for (let stack = 1; stack <= up.maxStacks; stack++) {
-      up.apply(mods)
-      const score = measure(world, mods, `${up.id}-${stack}`)
-      const vsBase = (score / baseline - 1) * 100
-      const marginal = (score / prev - 1) * 100
-      const note = UNMEASURABLE[up.id]
-      const verdict = note
-        ? `n/a — ${note}`
-        : marginal < 8 ? 'TRAP' : marginal < 22 ? 'weak' : marginal > 70 ? 'STRONG' : 'ok'
-      console.log(
-        `  ${up.name.padEnd(26)} ${String(stack).padStart(3)}  ${String(score).padStart(6)}  ` +
-        `${(vsBase >= 0 ? '+' : '') + vsBase.toFixed(0).padStart(5)}%  ` +
-        `${(marginal >= 0 ? '+' : '') + marginal.toFixed(0).padStart(7)}%   ${verdict}`,
-      )
-      prev = score
-    }
+  const fresh = () => {
+    const seed = `SHOP-${boardIdx++ % BOARDS}`
+    return { run: new RunState(seed), board: buildBoard(seed) }
   }
 
-  console.log('\n' + '='.repeat(84))
-  console.log('Caveats: measured at Balanced with random aim, so upgrades that reward')
-  console.log('AIM (Benchmark Overfit, Attention Mask) or HOT play (Hallucination Engine,')
-  console.log('Temperature Spike) are systematically under-reported here. Economy picks')
-  console.log('(Context Extension, Speculative Decoding) buy passes, not pass score, and')
-  console.log('read as 0% by construction — judge those on the full-run sweep instead.')
-  console.log('='.repeat(84))
+  boardIdx = 0
+  const baseline = measure(world, fresh, 'baseline')
+
+  console.log('='.repeat(86))
+  console.log('rogue/acc v2 — shop item marginal value')
+  console.log(`boards=${BOARDS}  passes/board=${PASSES}  baseline median pass=${baseline}`)
+  console.log(`benchmark 0 target=${benchmarkAt(0).target}  growth=${(benchmarkAt(1).target / benchmarkAt(0).target).toFixed(2)}x`)
+  console.log('='.repeat(86))
+  console.log('\nitem                        prec      $   median   vs base   $ per 10%')
+
+  const rows: { def: ShopItemDef; gain: number; price: number }[] = []
+
+  for (const def of SHOP_ITEMS) {
+    // Only score-affecting purchases are measurable here; economy items are
+    // judged on the full-run sweep, where buying passes is what they do.
+    if (def.effect.kind === 'activations' || def.effect.kind === 'card-add' || def.effect.kind === 'card-remove') continue
+
+    boardIdx = 0
+    const score = measure(world, () => {
+      const { run, board } = fresh()
+      const offer: Offer = { def, price: priceOf(def), sold: false }
+      if (def.precision === 'banded') offer.band = 'middle'
+      if (def.precision === 'precise') {
+        const e = def.effect
+        if (e.kind === 'node-level' || e.kind === 'node-transform') {
+          const pool = board.nodes.filter((n) => !n.removed && n.layer > 0 && n.layer < board.layers - 1)
+          if (pool.length) offer.target = { kind: 'node', id: pool[Math.floor(pool.length / 2)]!.id }
+        } else if (e.kind === 'bucket-level' || e.kind === 'bucket-transform') {
+          const pool = board.pockets.filter((p) => p.kind !== 'drain')
+          if (pool.length) offer.target = { kind: 'bucket', id: pool[0]!.id }
+        } else if (run.deck.cards.length) {
+          offer.target = { kind: 'card', id: run.deck.cards[0]!.id }
+        }
+      }
+      applyPurchase(offer, run, board, deriveRng('apply', def.id))
+      return { run, board }
+    }, def.id)
+
+    const gain = (score / baseline - 1) * 100
+    const price = priceOf(def)
+    rows.push({ def, gain, price })
+    const note = UNMEASURABLE[def.id]
+    const perTen = note ? 'n/a' : gain > 0.5 ? (price / (gain / 10)).toFixed(1) : '—'
+    console.log(
+      `  ${def.name.padEnd(26)} ${def.precision.padEnd(8)} ${String(price).padStart(2)}  ` +
+      `${String(Math.round(score)).padStart(6)}  ${((gain >= 0 ? '+' : '') + gain.toFixed(0)).padStart(7)}%   ${perTen.padStart(8)}` +
+      (note ? `   ${note}` : ''),
+    )
+  }
+
+  console.log('\n' + '='.repeat(86))
+  console.log('"$ per 10%" is the real comparison: an item is priced well when it costs')
+  console.log('about the same per unit of power as its neighbours. A conspicuously cheap')
+  console.log('row is an auto-buy; a conspicuously dear one is never worth taking.')
+  console.log('Negative rows are traps and must be fixed, not left as "a risky option".')
+  console.log('='.repeat(86))
+
+  const traps = rows.filter((r) => r.gain < -2 && !UNMEASURABLE[r.def.id])
+  if (traps.length) {
+    console.log('\nTRAPS:')
+    for (const t of traps) console.log(`  ${t.def.name}  ${t.gain.toFixed(0)}%`)
+  }
+  console.log(`\nstarting capital $${ECONOMY.startingMoney}`)
   world.dispose()
 }
 

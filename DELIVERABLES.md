@@ -127,16 +127,43 @@ its own per-wave visited set and the edge graph is a DAG by construction.
 
 Goal: the complete v2 loop.
 
-- [ ] **Remove temperature** — the deck replaces the per-launch choice
-- [ ] Per-card deck: types, levels, transforms, random draw queue
-- [ ] The 6 card transforms
-- [ ] Shop with three precision tiers and reroll
-- [ ] Money: clear reward, overshoot, interest, unspent activations
-- [ ] 8 funding rounds x 3 benchmarks
-- [ ] Boss modifiers on Frontier Claim benchmarks
-- [ ] IPO win screen (cash out, bubble pops behind you)
-- [ ] Failure screen (bubble pops while you are still holding)
-- [ ] Full-run harness retuned against the new curve
+- [x] **Remove temperature** — the deck replaces the per-launch choice
+- [x] Per-card deck: types, levels, transforms, random draw queue
+- [x] The 6 card transforms
+- [x] Shop with three precision tiers and reroll
+- [x] Money: clear reward, overshoot, interest, unspent activations
+- [x] 8 funding rounds x 3 benchmarks
+- [x] Boss modifiers on Frontier Claim benchmarks
+- [x] IPO win screen (cash out, bubble pops behind you)
+- [x] Failure screen (bubble pops while you are still holding)
+- [x] Full-run harness retuned against the new curve
+
+**Pass 3 notes**
+
+Final balance (`npm run sim`, 24 runs, random-aim bot with a naive shopping
+policy): **4.2% IPO win rate, median reach Series C/D, 42 purchases per run.**
+Pace runs 3 passes at Pre-Seed to ~11 at Series E — generous on-ramp, real
+squeeze late.
+
+Three problems the harness caught that playing would not have:
+
+1. **Upgrade breadth.** `+1 level to one weight` is 1.5% of a 68-node board
+   against a required ~19% per purchase. Pace drifted 3 -> 11 passes and runs
+   died at Series A. Level and transform purchases now hit SEVERAL nodes, and
+   precision trades breadth for choice: blind sprays wide, precise lands one
+   hard. That is the mechanical meaning of the pricing axis.
+2. **Deduplicated did nothing at all.** It granted `+1 maxHops`, but maxHops
+   never binds — the decay FLOOR always stops a wave first. It now lowers the
+   floor instead. Measured at exactly 0% before the fix.
+3. **Capital starvation.** The bot ended every run at $1. Payouts, interest
+   cap and the unspent bonus were all raised; purchases went 12.7 -> 42 a run.
+
+Also: `tools/` is now inside `tsconfig.json`. Both harnesses had silently
+rotted through the v2 refactor and only failed at runtime, because the
+typechecker was never looking at them. A broken measuring instrument is worse
+than none. `tools/upgrades.ts` was additionally auditing the DELETED v1
+upgrade catalogue; it now audits the shop, and `src/config/upgrades.ts` is
+gone (the surviving `Mods` bag is `src/config/mods.ts`).
 
 ---
 

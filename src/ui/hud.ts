@@ -1,17 +1,19 @@
 /**
  * hud.ts — the DOM heads-up display.
  *
- * The HUD is plain DOM, not canvas text. Crisp type at any DPI, free layout,
- * free accessibility, and it keeps text rendering out of the WebGL frame
- * budget. It sits in an overlay with `pointer-events: none`, so only the bits
- * that need clicking (the temperature rail, seed buttons) opt back in.
+ * Plain DOM rather than canvas text: crisp type at any DPI, free layout, and
+ * it keeps text rendering out of the WebGL frame budget. It lives in an
+ * overlay with `pointer-events: none`, so only the bits that need clicking
+ * opt back in.
  *
- * Every setter is write-only and idempotent — `sync()` is safe to call every
- * frame, and guards against touching the DOM when a value has not changed.
+ * Every setter is write-only and idempotent — `sync()` runs every frame and
+ * guards against touching the DOM when nothing changed.
  */
 
-import { ECONOMY, TEMPERATURES, type TemperatureTier } from '../config/balance'
-import type { Mods } from '../config/upgrades'
+import { ECONOMY } from '../config/balance'
+import { totalBenchmarks } from '../config/rounds'
+import type { RunState } from '../core/state'
+import { CARD_TYPES, CARD_TRANSFORMS, type Card } from '../sim/deck'
 import type { ScoreEvent } from '../sim/scoring'
 
 function el<T extends HTMLElement>(id: string): T {
@@ -32,8 +34,21 @@ const POPUP_COLORS: Record<ScoreEvent['kind'], string> = {
   echo: 'var(--dim)',
 }
 
+export interface HudData {
+  run: RunState
+  loaded: Card | null
+  upcoming: Card[]
+  chain: number
+  tierMult: number
+  passScore: number
+  signalCount: number
+  charging: boolean
+  charge: number
+}
+
 export class Hud {
-  private stageVal = el('stage-val')
+  private roundVal = el('round-val')
+  private roundName = el('round-name')
   private scoreVal = el('score-val')
   private targetVal = el('target-val')
   private benchFill = el('bench-fill')
@@ -43,186 +58,160 @@ export class Hud {
   private actMax = el('act-max')
   private actPips = el('act-pips')
   private cellAct = el('cell-act')
-  private tempVal = el('temp-val')
-  private tempName = el('temp-name')
-  private tempRail = el('temp-rail')
+  private moneyVal = el('money-val')
+  private deckRail = el('deck-rail')
   private chargeWrap = el('charge-wrap')
   private chargeFill = el('charge-fill')
   private chainVal = el('chain-val')
   private multVal = el('mult-val')
   private launchVal = el('launch-val')
+  private signalVal = el('signal-val')
   private popups = el('popups')
   private seedTxt = el('seed-txt')
   private muteBtn = el('mute-btn')
   private hintEl = el('help-hint')
+  private bossBar = el('boss-bar')
 
-  /** Cached last-written values, so sync() does not thrash the DOM. */
   private last = {
-    stage: -1,
-    score: -1,
-    target: -1,
-    act: -1,
-    maxPool: -1,
-    tempIndex: -1,
-    chain: -1,
-    mult: -1,
-    pass: -1,
-    pipCount: -1,
-    pipSpent: -1,
+    bm: -1, score: -1, target: -1, act: -1, actMax: -1, money: -1,
+    chain: -1, mult: -1, pass: -1, signal: -1, pips: -1, lit: -1, deck: '',
   }
 
-  private onSelectTemp: ((index: number) => void) | null = null
-  private railBuiltFor = ''
-
-  bindTempSelect(fn: (index: number) => void): void {
-    this.onSelectTemp = fn
-  }
-
-  setSeed(seed: string): void {
-    this.seedTxt.textContent = seed
-  }
-
-  bindMuteToggle(fn: () => void): void {
-    this.muteBtn.addEventListener('click', fn)
-  }
-
+  setSeed(seed: string): void { this.seedTxt.textContent = seed }
+  bindMuteToggle(fn: () => void): void { this.muteBtn.addEventListener('click', fn) }
   setMuted(muted: boolean): void {
     this.muteBtn.textContent = muted ? '♪ off' : '♪ on'
     this.muteBtn.classList.toggle('off', muted)
   }
 
-  /** Build or rebuild the temperature rail. Cheap guard avoids churn. */
-  buildTempRail(mods: Mods, selected: number, activations: number): void {
-    const signature = `${mods.unlockRogueTemp}|${mods.tempCostReduction}|${selected}|${activations}`
-    if (signature === this.railBuiltFor) return
-    this.railBuiltFor = signature
-
-    this.tempRail.replaceChildren()
-
-    TEMPERATURES.forEach((tier, i) => {
-      const locked = tier.locked && !mods.unlockRogueTemp
-      const cost = Math.max(1, tier.cost - mods.tempCostReduction)
-      const unaffordable = !locked && activations < cost
-
-      const row = document.createElement('div')
-      row.className = 'temp-opt'
-      row.dataset.tier = String(i)
-      if (i === selected) row.classList.add('sel')
-      if (locked) row.classList.add('locked')
-      if (unaffordable) row.classList.add('unaffordable')
-
-      const key = document.createElement('div')
-      key.className = 'key'
-      key.textContent = String(i + 1)
-
-      const body = document.createElement('div')
-      const name = document.createElement('div')
-      name.className = 'tname'
-      name.textContent = locked ? `${tier.name} — locked` : `${tier.value.toFixed(1)} ${tier.name}`
-      const meta = document.createElement('div')
-      meta.className = 'tmeta'
-      meta.textContent = locked
-        ? 'requires Temperature Spike'
-        : `×${tier.scoreMult.toFixed(1)} score · ${cost} activation${cost === 1 ? '' : 's'}`
-      body.append(name, meta)
-
-      row.append(key, body)
-      row.title = tier.blurb
-      if (!locked) {
-        row.addEventListener('click', () => this.onSelectTemp?.(i))
-      }
-      this.tempRail.append(row)
-    })
-  }
-
-  sync(data: {
-    stage: number
-    score: number
-    target: number
-    benchmark: string
-    activations: number
-    maxPool: number
-    tempIndex: number
-    tier: TemperatureTier
-    chain: number
-    tierMult: number
-    passScore: number
-    charging: boolean
-    charge: number
-    mods: Mods
-    overridesLeft: number
-  }): void {
+  sync(d: HudData): void {
+    const { run } = d
     const L = this.last
+    const bm = run.benchmark
 
-    if (data.stage !== L.stage) {
-      this.stageVal.textContent = `${data.stage}`
-      L.stage = data.stage
+    if (run.benchmarkIndex !== L.bm) {
+      this.roundVal.textContent = bm.roundName
+      this.roundName.textContent = `${run.benchmarkIndex + 1} / ${totalBenchmarks()}`
+      this.benchName.textContent = bm.name.toUpperCase()
+      L.bm = run.benchmarkIndex
+      this.renderBoss(run)
     }
-    if (data.score !== L.score) {
-      this.scoreVal.textContent = fmt(data.score)
-      L.score = data.score
+    if (run.score !== L.score) {
+      this.scoreVal.textContent = fmt(run.score)
+      L.score = run.score
     }
-    if (data.target !== L.target) {
-      this.targetVal.textContent = fmt(data.target)
-      this.benchName.textContent = data.benchmark.toUpperCase()
-      L.target = data.target
+    if (run.target !== L.target) {
+      this.targetVal.textContent = fmt(run.target)
+      L.target = run.target
     }
 
-    const pct = data.target > 0 ? Math.min(1, data.score / data.target) : 1
+    const pct = run.target > 0 ? Math.min(1, run.score / run.target) : 1
     this.benchFill.style.right = `${(1 - pct) * 100}%`
     this.benchBar.classList.toggle('met', pct >= 1)
 
-    if (data.activations !== L.act || data.maxPool !== L.maxPool) {
-      this.actVal.textContent = `${data.activations}`
-      this.actMax.textContent = `${data.maxPool}`
-      this.cellAct.classList.toggle('low', data.activations <= ECONOMY.lowWarning)
-      this.renderPips(data.activations, data.maxPool)
-      L.act = data.activations
-      L.maxPool = data.maxPool
+    const allowance = run.benchmarkActivations
+    if (run.activations !== L.act || allowance !== L.actMax) {
+      this.actVal.textContent = `${run.activations}`
+      this.actMax.textContent = `${allowance}`
+      this.cellAct.classList.toggle('low', run.activations <= ECONOMY.lowWarning)
+      this.renderPips(run.activations, allowance)
+      L.act = run.activations
+      L.actMax = allowance
     }
 
-    if (data.tempIndex !== L.tempIndex) {
-      this.tempVal.textContent = data.tier.value.toFixed(1)
-      this.tempName.textContent = data.tier.name
-      L.tempIndex = data.tempIndex
-    }
-    this.buildTempRail(data.mods, data.tempIndex, data.activations)
-
-    if (data.chain !== L.chain) {
-      this.chainVal.textContent = `${data.chain}`
-      L.chain = data.chain
-    }
-    if (data.tierMult !== L.mult) {
-      this.multVal.textContent = `×${data.tierMult.toFixed(1)}`
-      L.mult = data.tierMult
-    }
-    if (data.passScore !== L.pass) {
-      this.launchVal.textContent = fmt(data.passScore)
-      L.pass = data.passScore
+    if (run.money !== L.money) {
+      this.moneyVal.textContent = `$${run.money}`
+      L.money = run.money
     }
 
-    this.chargeWrap.classList.toggle('on', data.charging)
-    if (data.charging) this.chargeFill.style.right = `${(1 - data.charge) * 100}%`
+    if (d.chain !== L.chain) { this.chainVal.textContent = `${d.chain}`; L.chain = d.chain }
+    if (d.tierMult !== L.mult) { this.multVal.textContent = `×${d.tierMult.toFixed(1)}`; L.mult = d.tierMult }
+    if (d.passScore !== L.pass) { this.launchVal.textContent = fmt(d.passScore); L.pass = d.passScore }
+    if (d.signalCount !== L.signal) { this.signalVal.textContent = `${d.signalCount}`; L.signal = d.signalCount }
 
-    this.updateHint(data.mods, data.overridesLeft)
+    this.renderDeck(d)
+    this.chargeWrap.classList.toggle('on', d.charging)
+    if (d.charging) this.chargeFill.style.right = `${(1 - d.charge) * 100}%`
+    this.updateHint(run)
   }
 
-  /** Activation pips. Capped so a huge pool does not wrap the whole screen. */
-  private renderPips(activations: number, maxPool: number): void {
-    const shown = Math.min(maxPool, 30)
-    if (this.last.pipCount !== shown) {
+  /** Boss modifiers must be unmissable — they invalidate a habit. */
+  private renderBoss(run: RunState): void {
+    const boss = run.boss
+    if (!boss) {
+      this.bossBar.classList.remove('on')
+      this.bossBar.replaceChildren()
+      return
+    }
+    this.bossBar.classList.add('on')
+    this.bossBar.replaceChildren()
+    const name = document.createElement('b')
+    name.textContent = boss.name
+    const desc = document.createElement('span')
+    desc.textContent = boss.description
+    this.bossBar.append(name, desc)
+  }
+
+  /** The chambered card plus what is coming. You cannot choose, only aim. */
+  private renderDeck(d: HudData): void {
+    const sig = [d.loaded?.id, ...d.upcoming.map((c) => c.id)].join(',') +
+      `|${d.loaded?.level}|${d.run.deck.size}`
+    if (sig === this.last.deck) return
+    this.last.deck = sig
+
+    this.deckRail.replaceChildren()
+    const rows: { card: Card | null; now: boolean }[] = [{ card: d.loaded, now: true }]
+    for (const c of d.upcoming) rows.push({ card: c, now: false })
+
+    for (const row of rows) {
+      const node = document.createElement('div')
+      node.className = row.now ? 'card-row now' : 'card-row'
+      if (!row.card) {
+        node.innerHTML = '<div class="cname" style="color:var(--dim)">deck empty</div>'
+        this.deckRail.append(node)
+        continue
+      }
+      const def = CARD_TYPES[row.card.type]
+      const marker = document.createElement('div')
+      marker.className = 'marker'
+      marker.textContent = row.now ? '▶' : '·'
+
+      const body = document.createElement('div')
+      const name = document.createElement('div')
+      name.className = 'cname'
+      name.textContent = `${def.name}  L${row.card.level}`
+      const meta = document.createElement('div')
+      meta.className = 'cmeta'
+      meta.textContent = row.card.transforms.length
+        ? row.card.transforms.map((t) => CARD_TRANSFORMS[t].short).join(' · ')
+        : def.blurb
+      body.append(name, meta)
+      node.append(marker, body)
+      node.dataset.type = row.card.type
+      this.deckRail.append(node)
+    }
+
+    const foot = document.createElement('div')
+    foot.className = 'deck-foot'
+    foot.textContent = `${d.run.deck.size} cards in corpus`
+    this.deckRail.append(foot)
+  }
+
+  private renderPips(activations: number, allowance: number): void {
+    const shown = Math.min(allowance, 24)
+    if (this.last.pips !== shown) {
       this.actPips.replaceChildren()
       for (let i = 0; i < shown; i++) {
         const pip = document.createElement('i')
         pip.className = 'pip'
         this.actPips.append(pip)
       }
-      this.last.pipCount = shown
-      this.last.pipSpent = -1
+      this.last.pips = shown
+      this.last.lit = -1
     }
     const lit = Math.min(shown, activations)
-    if (this.last.pipSpent === lit) return
-    this.last.pipSpent = lit
+    if (this.last.lit === lit) return
+    this.last.lit = lit
     const nodes = this.actPips.children
     for (let i = 0; i < nodes.length; i++) {
       ;(nodes[i] as HTMLElement).classList.toggle('spent', i >= lit)
@@ -230,17 +219,15 @@ export class Hud {
   }
 
   private lastHint = ''
-  private updateHint(mods: Mods, overridesLeft: number): void {
+  private updateHint(run: RunState): void {
     const parts = [
       '<kbd>◄ ►</kbd> / mouse  aim',
       '<kbd>SPACE</kbd> / click  charge + fire',
-      '<kbd>1</kbd>–<kbd>4</kbd>  temperature',
     ]
-    if (mods.agenticOverridesPerStage > 0) {
-      parts.push(`<kbd>E</kbd>  agentic override (${overridesLeft} left)`)
+    if (run.mods.agenticOverridesPerStage > 0) {
+      parts.push(`<kbd>E</kbd>  override (${run.overridesLeft})`)
     }
-    parts.push('<kbd>M</kbd>  mute')
-    parts.push('<kbd>R</kbd>  new run')
+    parts.push('<kbd>M</kbd>  mute', '<kbd>R</kbd>  new run')
     const html = parts.join(' &nbsp;·&nbsp; ')
     if (html !== this.lastHint) {
       this.hintEl.innerHTML = html
@@ -248,29 +235,25 @@ export class Hud {
     }
   }
 
-  /**
-   * Floating score popup at a world position, projected to screen space by the
-   * caller. Cosmetic jitter here is the one place a non-seeded random is fine.
-   */
   popup(ev: ScoreEvent, screenX: number, screenY: number): void {
     const node = document.createElement('div')
-    node.className = ev.kind === 'spike' || ev.kind === 'hallucination' ? 'popup crit' : 'popup'
+    const big = ev.kind === 'spike' || ev.kind === 'hallucination'
+    node.className = big ? 'popup crit' : 'popup'
+    if (ev.kind === 'signal') node.classList.add('sig')
     node.style.left = `${screenX + (Math.random() - 0.5) * 14}px`
     node.style.top = `${screenY}px`
     node.style.color = POPUP_COLORS[ev.kind]
 
     if (ev.kind === 'spike') node.textContent = `BENCHMARK SPIKE  +${fmt(ev.points)}`
-    else if (ev.kind === 'dud') node.textContent = 'hallucinated'
+    else if (ev.kind === 'dud') node.textContent = 'dropped'
     else if (ev.kind === 'hallucination') node.textContent = `×5  +${fmt(ev.points)}`
     else if (ev.kind === 'critical') node.textContent = `HEAD  +${fmt(ev.points)}`
     else node.textContent = `+${fmt(ev.points)}`
 
     this.popups.append(node)
-    // Animation is 900ms; clean up a touch after so nothing accumulates.
     window.setTimeout(() => node.remove(), 1000)
   }
 
-  /** Centre-screen announcement for drains and stage events. */
   flash(text: string, color = 'var(--red)'): void {
     const node = document.createElement('div')
     node.className = 'popup crit'
@@ -283,27 +266,17 @@ export class Hud {
     window.setTimeout(() => node.remove(), 1000)
   }
 
-  clearPopups(): void {
-    this.popups.replaceChildren()
-  }
+  clearPopups(): void { this.popups.replaceChildren() }
 
-  /** Reset caches so the next sync() repaints everything. */
   invalidate(): void {
-    this.last.stage = -1
-    this.last.score = -1
-    this.last.target = -1
-    this.last.act = -1
-    this.last.maxPool = -1
-    this.last.tempIndex = -1
-    this.last.chain = -1
-    this.last.mult = -1
-    this.last.pass = -1
-    this.last.pipCount = -1
-    this.last.pipSpent = -1
-    this.railBuiltFor = ''
+    this.last = {
+      bm: -1, score: -1, target: -1, act: -1, actMax: -1, money: -1,
+      chain: -1, mult: -1, pass: -1, signal: -1, pips: -1, lit: -1, deck: '',
+    }
   }
 }
 
 export function fmt(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   return Math.round(n).toLocaleString('en-US')
 }

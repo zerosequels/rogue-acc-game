@@ -1,103 +1,112 @@
 /**
  * state.ts — the run model and its phase machine.
  *
- * This file owns the *rules* of a run: what a stage costs, when it is cleared,
- * when the run dies, what an upgrade does to the player. It deliberately knows
- * nothing about Three.js, Rapier, or the DOM, which keeps the rules readable
- * and makes them testable without a browser.
+ * Owns the RULES of a run: what a pass costs, when a benchmark is cleared,
+ * what money you earn, when the bubble pops. It knows nothing about Three.js,
+ * Rapier or the DOM, which keeps the rules readable and testable headlessly.
  *
  * Phase flow:
  *
- *   boot -> stage-intro -> aim <-> resolving
- *                           |          |
- *                           |          +-> stage-clear -> upgrade -> stage-intro
- *                           |          +-> run-fail
- *                           +-------------> run-win (after the final stage)
+ *   boot -> brief -> aim <-> resolving
+ *                     |          |
+ *                     |          +-> cleared -> shop -> brief
+ *                     |          +-> collapsed        (bubble pops, you lose)
+ *                     +-------------> ipo              (bubble pops, you won)
  */
 
-import { ECONOMY, STAGES, stageTarget, TEMPERATURES } from '../config/balance'
-import { baseMods, rollOffers, type Mods, type Upgrade } from '../config/upgrades'
+import { ECONOMY } from '../config/balance'
+import { benchmarkAt, bossFor, totalBenchmarks, type BenchmarkDef, type BossDef } from '../config/rounds'
+import { baseMods, type Mods } from '../config/mods'
+import { Deck } from '../sim/deck'
 import { deriveRng, type Rng } from './rng'
-import { benchmarkName } from '../flavor/text'
 
 export type Phase =
   | 'boot'
-  | 'stage-intro'
+  | 'brief'
   | 'aim'
   | 'resolving'
-  | 'stage-clear'
-  | 'upgrade'
-  | 'run-fail'
-  | 'run-win'
+  | 'cleared'
+  | 'shop'
+  | 'ipo'
+  | 'collapsed'
 
 export interface RunTotals {
   passesFired: number
   pinsStruck: number
-  /** Nodes lit by signal. Separate from pinsStruck: one is aim, one is wiring. */
   signalsFired: number
-  criticalsStruck: number
   spikesHit: number
   drains: number
   bestPass: number
   totalScore: number
   activationsSpent: number
+  moneyEarned: number
+  moneySpent: number
+  itemsBought: number
 }
 
 function emptyTotals(): RunTotals {
   return {
-    passesFired: 0,
-    pinsStruck: 0,
-    signalsFired: 0,
-    criticalsStruck: 0,
-    spikesHit: 0,
-    drains: 0,
-    bestPass: 0,
-    totalScore: 0,
-    activationsSpent: 0,
+    passesFired: 0, pinsStruck: 0, signalsFired: 0, spikesHit: 0, drains: 0,
+    bestPass: 0, totalScore: 0, activationsSpent: 0,
+    moneyEarned: 0, moneySpent: 0, itemsBought: 0,
   }
+}
+
+export interface ClearReward {
+  base: number
+  overshoot: number
+  interest: number
+  unspent: number
+  total: number
+  ratio: number
 }
 
 export class RunState {
   readonly seed: string
   phase: Phase = 'boot'
 
-  stage = 1
+  /** 0..23. The flat benchmark index drives everything. */
+  benchmarkIndex = 0
   score = 0
-  target: number
 
-  activations: number
-  maxPool: number
+  activations = 0
+  /** Permanent per-benchmark allowance, before boss modifiers. */
+  activationAllowance: number
+  money: number
 
   mods: Mods
-  /** upgrade id → stacks taken. */
-  taken: Record<string, number> = {}
-  /** Ordered list for the end-of-run summary. */
-  history: Upgrade[] = []
+  deck: Deck
+  /** shop item id -> times bought. */
+  bought: Record<string, number> = {}
 
-  /** Offers currently on the upgrade screen. */
-  offers: Upgrade[] = []
-
-  /** Mid-air redirects left this stage. */
   overridesLeft = 0
-  /** Whether the free first pass of the stage has been consumed. */
-  freePassUsed = false
-
   totals: RunTotals = emptyTotals()
 
   constructor(seed: string) {
     this.seed = seed
-    this.maxPool = ECONOMY.startingMaxPool
-    this.activations = ECONOMY.startingActivations
+    this.activationAllowance = ECONOMY.activationsPerBenchmark
+    this.money = ECONOMY.startingMoney
     this.mods = baseMods(ECONOMY.startingMaxPool)
-    this.target = stageTarget(1)
+    this.deck = new Deck(deriveRng(seed, 'deck'))
+    this.activations = this.activationAllowance
   }
 
   // -------------------------------------------------------------------------
   // Derived
   // -------------------------------------------------------------------------
 
-  get benchmark(): string {
-    return benchmarkName(this.stage)
+  get benchmark(): BenchmarkDef {
+    return benchmarkAt(this.benchmarkIndex)
+  }
+
+  get boss(): BossDef | null {
+    return bossFor(this.benchmark)
+  }
+
+  /** The effective target, after any boss modifier. */
+  get target(): number {
+    const b = this.boss
+    return Math.round(this.benchmark.target * (b?.targetMult ?? 1))
   }
 
   get progress(): number {
@@ -108,127 +117,113 @@ export class RunState {
     return this.score >= this.target
   }
 
-  get isFinalStage(): boolean {
-    return this.stage >= STAGES.count
+  get isFinalBenchmark(): boolean {
+    return this.benchmarkIndex >= totalBenchmarks() - 1
   }
 
-  /** A seeded stream for flavour choices, so a run always tells one story. */
+  /** Activations this benchmark grants, after any boss modifier. */
+  get benchmarkActivations(): number {
+    const b = this.boss
+    return Math.max(1, Math.round(this.activationAllowance * (b?.activationMult ?? 1)))
+  }
+
   flavorRng(label: string): Rng {
-    return deriveRng(this.seed, 'flavor', label, this.stage)
+    return deriveRng(this.seed, 'flavor', label, this.benchmarkIndex)
   }
 
   // -------------------------------------------------------------------------
   // Economy
   // -------------------------------------------------------------------------
 
-  /** Activation cost of a pass at `tierCost`, accounting for the free first pass. */
-  effectiveCost(tierCost: number): number {
-    if (this.mods.freeFirstLaunch && !this.freePassUsed) return 0
-    return tierCost
+  get canFire(): boolean {
+    return this.activations > 0 && this.deck.size > 0
   }
 
-  canAfford(tierCost: number): boolean {
-    return this.activations >= this.effectiveCost(tierCost)
-  }
-
-  /** Spend for a pass. Caller must have checked canAfford. */
-  spend(tierCost: number): number {
-    const cost = this.effectiveCost(tierCost)
-    if (cost === 0) this.freePassUsed = true
-    this.activations = Math.max(0, this.activations - cost)
-    this.totals.activationsSpent += cost
+  spend(): void {
+    this.activations = Math.max(0, this.activations - 1)
+    this.totals.activationsSpent++
     this.totals.passesFired++
-    return cost
+  }
+
+  commitPass(passScore: number, passMoney: number): void {
+    this.score += passScore
+    this.totals.totalScore += passScore
+    this.totals.bestPass = Math.max(this.totals.bestPass, passScore)
+    if (passMoney > 0) {
+      this.money += passMoney
+      this.totals.moneyEarned += passMoney
+    }
   }
 
   /**
-   * The cheapest pass currently possible. If the player cannot afford even
-   * this, the run is over — checked after every pass resolves.
+   * Interest is what makes the economy a decision rather than an accumulator:
+   * holding money earns money, so every purchase has an opportunity cost. The
+   * cap is the important half — past it, hoarding earns nothing and the money
+   * belongs in the board.
    */
-  cheapestCost(): number {
-    const tiers = TEMPERATURES.filter((t) => !t.locked || this.mods.unlockRogueTemp)
-    let min = Infinity
-    for (const t of tiers) min = Math.min(min, Math.max(1, t.cost - this.mods.tempCostReduction))
-    return min === Infinity ? 1 : min
+  interestOn(amount: number): number {
+    return Math.min(
+      ECONOMY.interestCap,
+      Math.floor(amount / ECONOMY.interestPer) * ECONOMY.interestAmount,
+    )
   }
 
-  get isBankrupt(): boolean {
-    return !this.canAfford(this.cheapestCost())
+  applyClearRewards(): ClearReward {
+    const def = this.benchmark
+    const ratio = this.target > 0 ? this.score / this.target : 1
+
+    const base = def.payout
+    const overshootSteps = Math.floor(Math.max(0, ratio - 1) / ECONOMY.overshootPer)
+    const overshoot = Math.min(ECONOMY.overshootCap, overshootSteps)
+    const unspent = Math.min(ECONOMY.unspentCap, this.activations)
+    const interest = this.interestOn(this.money)
+
+    const total = base + overshoot + unspent + interest
+    this.money += total
+    this.totals.moneyEarned += total
+    return { base, overshoot, interest, unspent, total, ratio }
+  }
+
+  canAfford(price: number): boolean {
+    return this.money >= price
+  }
+
+  pay(price: number, itemId: string): boolean {
+    if (!this.canAfford(price)) return false
+    this.money -= price
+    this.totals.moneySpent += price
+    this.totals.itemsBought++
+    this.bought[itemId] = (this.bought[itemId] ?? 0) + 1
+    return true
   }
 
   // -------------------------------------------------------------------------
   // Transitions
   // -------------------------------------------------------------------------
 
-  /** Called when a forward pass commits its score. */
-  commitPass(passScore: number): void {
-    this.score += passScore
-    this.totals.totalScore += passScore
-    this.totals.bestPass = Math.max(this.totals.bestPass, passScore)
-  }
-
   /**
-   * Decide what happens after a pass fully resolves.
-   * Returns the phase the game should move to.
+   * What happens once a pass fully resolves.
+   *
+   * Failure is checked AFTER the target, so a final pass that clears on your
+   * last activation is a win rather than a loss. That ordering is the whole
+   * difference between a tense finish and a cheated one.
    */
   resolveAfterPass(): Phase {
-    if (this.targetMet) {
-      return this.isFinalStage ? 'run-win' : 'stage-clear'
-    }
-    if (this.isBankrupt) return 'run-fail'
+    if (this.targetMet) return this.isFinalBenchmark ? 'ipo' : 'cleared'
+    if (!this.canFire) return 'collapsed'
     return 'aim'
   }
 
-  /** Apply stage-clear refunds. Returns a breakdown for the UI. */
-  applyStageRewards(): { refund: number; overshoot: number; ratio: number } {
-    const refund = Math.min(ECONOMY.stageClearRefund, this.maxPool - this.activations)
-    this.activations += Math.max(0, refund)
-
-    const ratio = this.target > 0 ? this.score / this.target : 1
-    let overshoot = 0
-    if (ratio >= ECONOMY.overshootThreshold) {
-      overshoot = Math.min(ECONOMY.overshootBonus, this.maxPool - this.activations)
-      this.activations += Math.max(0, overshoot)
-    }
-    return { refund: Math.max(0, refund), overshoot: Math.max(0, overshoot), ratio }
-  }
-
-  /** Roll the upgrade offers for the current stage transition. */
-  rollUpgradeOffers(): Upgrade[] {
-    const rng = deriveRng(this.seed, 'upgrades', this.stage)
-    this.offers = rollOffers(rng, this.taken, this.mods, 3)
-    return this.offers
-  }
-
-  takeUpgrade(upgrade: Upgrade): void {
-    upgrade.apply(this.mods)
-    if (upgrade.onTake) {
-      const bag = { activations: this.activations, maxPool: this.maxPool }
-      upgrade.onTake(bag)
-      this.maxPool = bag.maxPool
-      this.activations = Math.min(bag.activations, bag.maxPool)
-    }
-    // Keep the pool ceiling in sync with mods, whichever path changed it.
-    this.maxPool = this.mods.poolMax
-    this.activations = Math.min(this.activations, this.maxPool)
-
-    this.taken[upgrade.id] = (this.taken[upgrade.id] ?? 0) + 1
-    this.history.push(upgrade)
-    this.offers = []
-  }
-
-  /** Advance to the next stage. Resets per-stage state. */
-  nextStage(): void {
-    this.stage++
+  advanceBenchmark(): void {
+    this.benchmarkIndex++
     this.score = 0
-    this.target = stageTarget(this.stage)
-    this.overridesLeft = this.mods.agenticOverridesPerStage
-    this.freePassUsed = false
   }
 
-  /** Called when a fresh board is loaded, including the first stage. */
-  beginStage(): void {
+  /** Called when a benchmark starts. Resets per-benchmark state. */
+  beginBenchmark(rng: Rng): void {
+    this.score = 0
+    this.activations = this.benchmarkActivations
     this.overridesLeft = this.mods.agenticOverridesPerStage
-    this.freePassUsed = false
+    this.deck.reshuffle(rng)
   }
 }

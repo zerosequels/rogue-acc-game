@@ -63,6 +63,7 @@ export class BoardView {
   private labelCanvas: HTMLCanvasElement | null = null
   private labelTexture: THREE.CanvasTexture | null = null
   private labelsDirty = true
+  private deadLayers = 0
 
   constructor() {
     this.group.position.z = 0
@@ -474,11 +475,28 @@ export class BoardView {
     if (edgeDirty) this.writeAllEdgeColors()
   }
 
+  /**
+   * Grey out the lowest `count` layers for a boss modifier. Inert weights
+   * must LOOK inert — a player aiming at a layer that cannot score is a
+   * player the interface has lied to.
+   */
+  setDeadLayers(count: number, board: Board): void {
+    this.deadLayers = count
+    for (const v of this.visuals.values()) this.writeColor(v, board)
+    if (this.nodeMesh?.instanceColor) this.nodeMesh.instanceColor.needsUpdate = true
+    if (this.headMesh?.instanceColor) this.headMesh.instanceColor.needsUpdate = true
+  }
+
+  private isDead(node: NodeDef, board: Board): boolean {
+    return this.deadLayers > 0 && node.layer >= board.layers - this.deadLayers
+  }
+
   private writeColor(v: NodeVisual, board: Board): void {
     const mesh = v.head ? this.headMesh : this.nodeMesh
     if (!mesh) return
 
-    if (v.spent) COL.setHex(v.head ? COLORS.critical : COLORS.pinSpent)
+    if (this.isDead(v.node, board)) COL.setHex(COLORS.inert)
+    else if (v.spent) COL.setHex(v.head ? COLORS.critical : COLORS.pinSpent)
     else this.restColor(v.node, board, COL)
 
     if (v.flash > 0) {

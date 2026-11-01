@@ -4,6 +4,7 @@
     "useDefineForClassFields": true,
     "module": "ESNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -18,5 +19,8 @@
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false
   },
-  "include": ["src"]
+  // tools/ is included deliberately: the harnesses import the real game code,
+  // and when they were excluded they silently rotted through a refactor until
+  // they failed at runtime. A broken measuring instrument is worse than none.
+  "include": ["src", "tools"]
 }

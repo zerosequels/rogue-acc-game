@@ -17,7 +17,7 @@
  */
 
 import { LAUNCH } from '../config/balance'
-import type { Mods } from '../config/upgrades'
+import type { Mods } from '../config/mods'
 import { isAttentionHead, type NodeDef } from './board'
 import type { OrbHandle, PhysicsWorld } from './physics'
 import { scoreDetonation, type Pass, type ScoreEvent, type ScoringContext } from './scoring'

@@ -1,312 +1,256 @@
 /**
- * tools/simulate.ts — headless balance harness.
+ * tools/simulate.ts — v2 full-run harness.
  *
- * The acceptance criteria for this game are things like "cascades feel
- * energetic" and "boards remain mostly playable", which cannot be eyeballed
- * reliably. This runs the real generator, the real validator, the real physics
- * and the real scoring code with no renderer attached, and reports the
- * distributions that actually decide whether the numbers in `balance.ts` work.
+ * Plays complete runs headlessly: real board, real physics, real propagation,
+ * real scoring, real shop. Twenty-four benchmarks is far too long a curve to
+ * tune by playing, and the interest-bearing economy compounds, so the only
+ * honest way to size the numbers is to run a few hundred benchmarks.
  *
- *   npm run sim              -- default sweep
- *   npm run sim -- 40        -- 40 seeds
+ *   npm run sim
+ *   npm run sim -- 40
  *
- * The sim layer imports nothing from Three.js or the DOM, which is what makes
- * this possible. Keep it that way.
+ * The bot is deliberately UNSKILLED: it aims uniformly at random. A random-aim
+ * bot clearing most runs would mean the game has no skill ceiling.
  */
 
-import { ECONOMY, LAUNCH, ORB, PHYSICS, SCORE, stageTarget, STAGES, TEMPERATURES, VALIDATOR } from '../src/config/balance'
-import { baseMods, rollOffers, type Mods } from '../src/config/upgrades'
-import { deriveRng, mintSeed, Rng } from '../src/core/rng'
+import { DECK, ECONOMY, LAUNCH, ORB, PHYSICS, VALIDATOR } from '../src/config/balance'
+import { benchmarkAt, bossFor, totalBenchmarks } from '../src/config/rounds'
+import type { Mods } from '../src/config/mods'
+import { deriveRng, type Rng } from '../src/core/rng'
+import { RunState } from '../src/core/state'
+import { applyPurchase, rollStock } from '../src/core/shopkeeper'
 import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
-import { computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
-import { resolveCriticalStrike } from '../src/sim/effects'
+import {
+  computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext,
+} from '../src/sim/scoring'
 import { buildSignalGraph, makeSignalResult, propagate } from '../src/sim/propagation'
-import { isAttentionHead, type Board } from '../src/sim/board'
+import { resolveCriticalStrike } from '../src/sim/effects'
+import { isAttentionHead, type Board, type NodeDef } from '../src/sim/board'
+import { CARD_TYPES, cardValue } from '../src/sim/deck'
 
-const SEEDS = Number(process.argv[2] ?? 24)
+const RUNS = Number(process.argv[2] ?? 24)
 
 function pct(xs: number[], p: number): number {
-  if (xs.length === 0) return 0
+  if (!xs.length) return 0
   const s = xs.slice().sort((a, b) => a - b)
   return s[Math.min(s.length - 1, Math.max(0, Math.floor((s.length - 1) * p)))]!
 }
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
+const median = (xs: number[]) => pct(xs, 0.5)
 
-/** Build a validated board exactly the way the game does. */
-function buildBoard(seed: string, _stage: number, mods: Mods): Board {
-  for (let attempt = 0; attempt < VALIDATOR.maxAttempts; attempt++) {
-    const board = generateBoard(boardRngFor(seed, attempt), `${seed}/a${attempt}`)
-    if (mods.pruneFraction > 0) {
-      const rng = deriveRng(seed, 'prune', attempt)
-      const ordinary = board.nodes.filter((n) => !isAttentionHead(n) && !n.removed)
-      for (const n of rng.sample(ordinary, Math.floor(ordinary.length * mods.pruneFraction))) {
-        n.removed = true
-      }
-    }
-    const stats = probeBoard(board, seed, attempt)
-    board.stats = stats
-    if (stats.accepted) return board
+function buildBoard(seed: string): Board {
+  for (let a = 0; a < VALIDATOR.maxAttempts; a++) {
+    const b = generateBoard(boardRngFor(seed, a), `${seed}/a${a}`)
+    b.stats = probeBoard(b, seed, a)
+    if (b.stats.accepted) return b
   }
-  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fallback`)
+  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fb`)
   last.stats = { ...probeBoard(last, seed, 0), fallback: true, accepted: true }
   return last
 }
 
-/**
- * Simulate one forward pass with a given aim/charge/temperature and return the
- * score it produced plus the cascade length. Uses the real scoring path.
- */
-const detonated: { removed: boolean }[] = []
+interface PassOut { score: number; money: number; contacts: number; signalled: number }
 
-function simulatePass(
-  world: PhysicsWorld,
-  board: Board,
-  mods: Mods,
-  tempIndex: number,
-  angle: number,
-  charge: number,
-  rng: Rng,
-): { score: number; pins: number; spike: boolean; drained: boolean } {
-  const tier = TEMPERATURES[tempIndex]!
+function runPass(
+  world: PhysicsWorld, board: Board, run: RunState, mods: Mods,
+  angle: number, charge: number, rng: Rng, deadLayers: number,
+): PassOut {
+  const card = run.deck.draw(rng)
+  if (!card) return { score: 0, money: 0, contacts: 0, signalled: 0 }
+  const def = CARD_TYPES[card.type]
+
   const events = makeStepEvents()
   const pass = new Pass()
   const graph = buildSignalGraph(board)
   const sig = makeSignalResult()
   const ctx: ScoringContext = {
-    mods,
-    tempScoreMult: tier.scoreMult,
-    tempValue: tier.value,
-    rng,
+    mods, tempScoreMult: 1, tempValue: 0, rng,
     layerBonus: computeLayerBonus(board),
   }
 
-  // Explosive Weights removes pins during a pass; clear that before rebuilding
-  // so each measured pass starts from the same board the player would see.
-  for (const pin of detonated) pin.removed = false
-  detonated.length = 0
-  world.loadBoard(board)
+  let scale = cardValue(card) * mods.orbScoreMult
+  if (def.volatile) scale *= rng.range(def.volatile[0], def.volatile[1])
+  const dud = card.transforms.includes('poisoned') && rng.next() < DECK.poisonedDudChance
 
-  const speed = LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge
+  world.loadBoard(board)
+  const speed = (LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge) * def.speed
   const count = Math.max(1, Math.min(mods.orbsPerLaunch, LAUNCH.maxOrbsHardCap))
   for (let i = 0; i < count; i++) {
-    const offset = count === 1 ? 0 : (i - (count - 1) / 2) * LAUNCH.multiOrbSpread
-    const a = Math.max(-LAUNCH.maxAngle, Math.min(LAUNCH.maxAngle, angle + offset))
+    const off = count === 1 ? 0 : (i - (count - 1) / 2) * LAUNCH.multiOrbSpread
+    const a = Math.max(-LAUNCH.maxAngle, Math.min(LAUNCH.maxAngle, angle + off))
     world.spawnOrb(
-      Math.sin(a) * 0.45,
-      LAUNCH.originY - 0.5,
-      Math.sin(a) * speed,
-      -Math.cos(a) * speed,
-      { restitution: ORB.restitution * tier.bounce, launchId: 0, scoreScale: mods.orbScoreMult },
+      Math.sin(a) * 0.45, LAUNCH.originY - 0.5,
+      Math.sin(a) * speed, -Math.cos(a) * speed,
+      { restitution: ORB.restitution * def.bounce, launchId: 0, scoreScale: scale },
     )
   }
 
-  let spike = false
-  let drained = false
-  const maxSteps = Math.ceil((ORB.maxLifetime + 2) / PHYSICS.dt)
+  const inert = (n: NodeDef) => deadLayers > 0 && n.layer >= board.layers - deadLayers
+  const detonated: NodeDef[] = []
+  let contacts = 0
+  let signalled = 0
 
-  for (let step = 0; step < maxSteps && world.orbCount > 0; step++) {
+  const maxSteps = Math.ceil((ORB.maxLifetime + 2) / PHYSICS.dt)
+  for (let s = 0; s < maxSteps && world.orbCount > 0; s++) {
     world.stepOnce(events)
-    for (const hit of events.pinHits) {
-      const ev = scorePin(pass, hit.pin, hit.orb, ctx)
-      if (ev) propagate(graph, pass, hit.pin, ctx, sig)
-      if (ev && isAttentionHead(hit.pin)) {
-        const outcome = resolveCriticalStrike(world, pass, hit.pin, hit.orb, ctx, mods, ORB.restitution * tier.bounce)
-        for (const d of outcome.detonated) detonated.push(d.pin)
+    for (const h of events.pinHits) {
+      if (inert(h.pin)) continue
+      const ev = scorePin(pass, h.pin, h.orb, ctx)
+      if (!ev) continue
+      contacts++
+      if (isAttentionHead(h.pin)) {
+        const o = resolveCriticalStrike(world, pass, h.pin, h.orb, ctx, mods, ORB.restitution * def.bounce)
+        for (const d of o.detonated) detonated.push(d.pin)
+      }
+      propagate(graph, pass, h.pin, ctx, sig)
+      signalled += sig.reached
+    }
+    for (const l of events.landings) scoreLanding(pass, l.pocket, l.orb, ctx)
+    if (pass.ended) break
+  }
+  world.despawnAllOrbs()
+  for (const p of detonated) p.removed = false
+
+  return {
+    score: dud ? 0 : pass.score,
+    money: pass.money,
+    contacts,
+    signalled,
+  }
+}
+
+/** A plain shopping policy: buy the cheapest useful thing, keep a reserve. */
+function shop(run: RunState, board: Board, rng: Rng): void {
+  for (let visit = 0; visit < 4; visit++) {
+    const stock = rollStock(run, board, rng)
+    // Keep $5 back so interest keeps paying — the bot is not clever, but
+    // ignoring interest entirely would misrepresent the economy.
+    const reserve = run.money > 12 ? 5 : 0
+    const affordable = stock
+      .filter((o) => o.price <= run.money - reserve)
+      .sort((a, b) => a.price - b.price)
+    if (affordable.length === 0) break
+    const offer = affordable[affordable.length - 1]!
+    if (offer.def.precision === 'banded') offer.band = rng.pick(['upper', 'middle', 'lower'] as const)
+    if (offer.def.precision === 'precise') {
+      // Bot targets randomly even when it paid for precision. Real players
+      // do better, which is part of why the unskilled baseline is a floor.
+      const e = offer.def.effect
+      if (e.kind === 'node-level' || e.kind === 'node-transform') {
+        const pool = board.nodes.filter((n) => !n.removed)
+        offer.target = { kind: 'node', id: rng.pick(pool).id }
+      } else if (e.kind === 'bucket-level' || e.kind === 'bucket-transform') {
+        offer.target = { kind: 'bucket', id: rng.pick(board.pockets).id }
+      } else if (run.deck.cards.length > 0) {
+        offer.target = { kind: 'card', id: rng.pick(run.deck.cards).id }
       }
     }
-    for (const landing of events.landings) {
-      scoreLanding(pass, landing.pocket, landing.orb, ctx)
-      if (landing.pocket.kind === 'spike') spike = true
-      if (landing.pocket.kind === 'drain') drained = true
-    }
+    const result = applyPurchase(offer, run, board, rng)
+    if (result.ok) run.pay(offer.price, offer.def.id)
+    else break
   }
-
-  world.despawnAllOrbs()
-  return { score: pass.score, pins: pass.struck.size, spike, drained }
 }
 
 async function main(): Promise<void> {
   await initPhysics()
   const world = new PhysicsWorld()
 
-  console.log('='.repeat(78))
-  console.log('rogue/acc — headless balance sweep')
-  console.log(`seeds=${SEEDS}  stages=${STAGES.count}  basePin=${SCORE.basePinValue}  growth=${STAGES.growth}`)
-  console.log('='.repeat(78))
+  console.log('='.repeat(82))
+  console.log('rogue/acc v2 — full run sweep')
+  console.log(`runs=${RUNS}  benchmarks=${totalBenchmarks()}  base=${benchmarkAt(0).target}  final=${benchmarkAt(23).target}`)
+  console.log('='.repeat(82))
 
-  // -----------------------------------------------------------------------
-  // 1. Generator + validator health
-  // -----------------------------------------------------------------------
-  console.log('\n[1] BOARD GENERATION')
-  const attemptCounts: number[] = []
-  const medians: number[] = []
-  const settles: number[] = []
-  let fallbacks = 0
-  const mods0 = baseMods(ECONOMY.startingMaxPool)
+  const reached: number[] = []
+  const passesPer: number[] = []
+  const moneyEnd: number[] = []
+  const deckEnd: number[] = []
+  const bought: number[] = []
+  let wins = 0
+  const perBenchmarkPasses = new Map<number, number[]>()
 
-  for (let i = 0; i < SEEDS; i++) {
-    const seed = `SWEEP-${i}`
-    for (let stage = 1; stage <= 3; stage++) {
-      const board = buildBoard(seed, stage, mods0)
-      attemptCounts.push(board.stats.attempts)
-      if (board.stats.fallback) fallbacks++
-      else {
-        medians.push(board.stats.medianPins)
-        settles.push(board.stats.settleRate)
+  for (let r = 0; r < RUNS; r++) {
+    const seed = `V2-${r}`
+    const run = new RunState(seed)
+    const board = buildBoard(seed)
+    let alive = true
+
+    while (alive && run.benchmarkIndex < totalBenchmarks()) {
+      const bm = benchmarkAt(run.benchmarkIndex)
+      const boss = bossFor(bm)
+      const rng = deriveRng(seed, 'play', run.benchmarkIndex)
+      run.beginBenchmark(rng)
+      let passes = 0
+
+      while (run.canFire) {
+        run.spend()
+        passes++
+        const out = runPass(
+          world, board, run, run.mods,
+          rng.range(-LAUNCH.maxAngle, LAUNCH.maxAngle),
+          rng.range(0.5, 1.0), rng, boss?.deadLayers ?? 0,
+        )
+        run.commitPass(out.score, out.money)
+        if (run.targetMet) break
       }
+
+      const list = perBenchmarkPasses.get(run.benchmarkIndex) ?? []
+      list.push(passes)
+      perBenchmarkPasses.set(run.benchmarkIndex, list)
+      passesPer.push(passes)
+
+      if (!run.targetMet) { alive = false; break }
+      run.applyClearRewards()
+      if (run.benchmarkIndex >= totalBenchmarks() - 1) { wins++; break }
+      shop(run, board, deriveRng(seed, 'shop', run.benchmarkIndex))
+      run.advanceBenchmark()
     }
+
+    reached.push(run.benchmarkIndex + (alive ? 1 : 0))
+    moneyEnd.push(run.money)
+    deckEnd.push(run.deck.size)
+    bought.push(run.totals.itemsBought)
   }
-  console.log(`  boards built        ${attemptCounts.length}`)
-  console.log(`  attempts  mean ${mean(attemptCounts).toFixed(2)}   p90 ${pct(attemptCounts, 0.9)}   max ${Math.max(...attemptCounts)}`)
-  console.log(`  fallbacks used      ${fallbacks}  (${((fallbacks / attemptCounts.length) * 100).toFixed(1)}%)`)
-  console.log(`  median cascade      p10 ${pct(medians, 0.1).toFixed(1)}  p50 ${pct(medians, 0.5).toFixed(1)}  p90 ${pct(medians, 0.9).toFixed(1)}`)
-  console.log(`  settle rate         p10 ${(pct(settles, 0.1) * 100).toFixed(0)}%  p50 ${(pct(settles, 0.5) * 100).toFixed(0)}%`)
 
-  // -----------------------------------------------------------------------
-  // 2. Single-pass score distribution at each temperature, base model
-  // -----------------------------------------------------------------------
-  console.log('\n[2] PASS SCORE BY TEMPERATURE (base checkpoint, stage 1 boards)')
-  console.log('  tier        cost   p10     p50     p90     max    pins(p50)  spike%')
-  for (let ti = 0; ti < TEMPERATURES.length; ti++) {
-    const tier = TEMPERATURES[ti]!
-    const scores: number[] = []
-    const pinCounts: number[] = []
-    let spikes = 0
-    let n = 0
-    for (let i = 0; i < Math.min(SEEDS, 12); i++) {
-      const seed = `SWEEP-${i}`
-      const board = buildBoard(seed, 1, mods0)
-      const rng = deriveRng(seed, 'sim', ti)
-      for (let k = 0; k < 14; k++) {
-        const angle = rng.range(-LAUNCH.maxAngle, LAUNCH.maxAngle)
-        const charge = rng.range(0.3, 1)
-        const r = simulatePass(world, board, mods0, ti, angle, charge, rng)
-        scores.push(r.score)
-        pinCounts.push(r.pins)
-        if (r.spike) spikes++
-        n++
-      }
-    }
+  console.log('\n[1] HOW FAR RUNS GET')
+  const buckets = new Map<number, number>()
+  for (const r of reached) {
+    const round = Math.min(8, Math.floor((r - 1) / 3) + 1)
+    buckets.set(round, (buckets.get(round) ?? 0) + 1)
+  }
+  const ROUND_NAMES = ['Pre-Seed','Seed','Series A','Series B','Series C','Series D','Series E','IPO']
+  for (let i = 1; i <= 8; i++) {
+    const c = buckets.get(i) ?? 0
+    console.log(`  ${ROUND_NAMES[i-1]!.padEnd(9)} ${String(c).padStart(3)}  ${'█'.repeat(c)}`)
+  }
+  console.log(`\n  win rate (IPO)      ${((wins / RUNS) * 100).toFixed(1)}%  (unskilled baseline)`)
+  console.log(`  median benchmark    ${median(reached)} of ${totalBenchmarks()}`)
+
+  console.log('\n[2] PACE — passes per benchmark (target ~6-8)')
+  console.log('  bench  round      target     passes p50   n')
+  for (let i = 0; i < totalBenchmarks(); i++) {
+    const list = perBenchmarkPasses.get(i)
+    if (!list || list.length < 2) continue
+    const bm = benchmarkAt(i)
     console.log(
-      `  ${tier.value.toFixed(1)} ${tier.name.padEnd(9)} ${String(tier.cost).padStart(2)}  ` +
-      `${String(pct(scores, 0.1)).padStart(6)}  ${String(pct(scores, 0.5)).padStart(6)}  ` +
-      `${String(pct(scores, 0.9)).padStart(6)}  ${String(Math.max(...scores)).padStart(6)}  ` +
-      `${String(pct(pinCounts, 0.5)).padStart(7)}    ${((spikes / n) * 100).toFixed(1)}%`,
+      `   ${String(i).padStart(2)}    ${bm.roundName.padEnd(9)} ${String(bm.target).padStart(9)}` +
+      `        ${String(median(list)).padStart(3)}      ${list.length}`,
     )
   }
 
-  // -----------------------------------------------------------------------
-  // 3. Full-run simulation with a plausible player policy
-  // -----------------------------------------------------------------------
-  console.log('\n[3] FULL RUN SIMULATION')
-  console.log('  policy: aim uniformly at random, charge 0.55-1.0, pick the hottest')
-  console.log('  affordable temperature while >8 activations remain, else cheapest.')
-  console.log('  This is a DELIBERATELY UNSKILLED baseline — a real player aims.\n')
+  console.log('\n[3] ECONOMY')
+  console.log(`  items bought        mean ${mean(bought).toFixed(1)}   p90 ${pct(bought, 0.9)}`)
+  console.log(`  capital at end      p50 $${median(moneyEnd)}   p90 $${pct(moneyEnd, 0.9)}`)
+  console.log(`  deck size at end    p50 ${median(deckEnd)}   p90 ${pct(deckEnd, 0.9)}`)
+  console.log(`  passes per bench    p50 ${median(passesPer)}   p90 ${pct(passesPer, 0.9)}`)
+  console.log(`  starting capital    $${ECONOMY.startingMoney}`)
 
-  const reached: number[] = []
-  const finalScores: number[] = []
-  const passesPerStage: number[] = []
-  let wins = 0
-
-  for (let i = 0; i < SEEDS; i++) {
-    const seed = `RUN-${i}`
-    const mods = baseMods(ECONOMY.startingMaxPool)
-    let activations = ECONOMY.startingActivations
-    let maxPool = ECONOMY.startingMaxPool
-    const taken: Record<string, number> = {}
-    let stage = 1
-    let total = 0
-
-    while (stage <= STAGES.count) {
-      const target = stageTarget(stage)
-      const board = buildBoard(seed, stage, mods)
-      const rng = deriveRng(seed, 'play', stage)
-      let score = 0
-      let passes = 0
-      let freeUsed = false
-
-      for (;;) {
-        // --- choose temperature ---
-        const avail = TEMPERATURES.filter((t) => !t.locked || mods.unlockRogueTemp)
-        const costOf = (t: typeof avail[number]) => Math.max(1, t.cost - mods.tempCostReduction)
-        let choice = avail[0]!
-        if (activations > 8) {
-          for (const t of avail) if (costOf(t) <= activations) choice = t
-        } else {
-          choice = avail.reduce((a, b) => (costOf(a) <= costOf(b) ? a : b))
-        }
-        const tempIndex = TEMPERATURES.indexOf(choice)
-        let cost = costOf(choice)
-        if (mods.freeFirstLaunch && !freeUsed) { cost = 0; freeUsed = true }
-        if (activations < cost) break
-
-        activations -= cost
-        passes++
-        const r = simulatePass(
-          world, board, mods, tempIndex,
-          rng.range(-LAUNCH.maxAngle, LAUNCH.maxAngle),
-          rng.range(0.55, 1.0),
-          rng,
-        )
-        score += r.score
-        if (score >= target) break
-      }
-
-      total += score
-      passesPerStage.push(passes)
-
-      if (score < target) break // run failed on this stage
-
-      // --- stage clear: refunds, then an upgrade ---
-      activations = Math.min(maxPool, activations + ECONOMY.stageClearRefund)
-      if (score / target >= ECONOMY.overshootThreshold) {
-        activations = Math.min(maxPool, activations + ECONOMY.overshootBonus)
-      }
-
-      const offers = rollOffers(deriveRng(seed, 'upgrades', stage), taken, mods, 3)
-      if (offers.length > 0) {
-        // Greedy policy: always take the first offer. Not optimal — on purpose.
-        const pick = offers[0]!
-        pick.apply(mods)
-        if (pick.onTake) {
-          const bag = { activations, maxPool }
-          pick.onTake(bag)
-          maxPool = bag.maxPool
-          activations = Math.min(bag.activations, bag.maxPool)
-        }
-        maxPool = mods.poolMax
-        activations = Math.min(activations, maxPool)
-        taken[pick.id] = (taken[pick.id] ?? 0) + 1
-      }
-
-      stage++
-    }
-
-    reached.push(Math.min(stage, STAGES.count))
-    finalScores.push(total)
-    if (stage > STAGES.count) wins++
-  }
-
-  const dist = new Map<number, number>()
-  for (const r of reached) dist.set(r, (dist.get(r) ?? 0) + 1)
-  console.log('  stage reached   count   bar')
-  for (let s = 1; s <= STAGES.count; s++) {
-    const c = dist.get(s) ?? 0
-    console.log(`    ${String(s).padStart(2)}            ${String(c).padStart(4)}   ${'█'.repeat(c)}`)
-  }
-  console.log(`\n  win rate            ${((wins / SEEDS) * 100).toFixed(1)}%  (unskilled baseline)`)
-  console.log(`  median stage        ${pct(reached, 0.5)}`)
-  console.log(`  passes per stage    p50 ${pct(passesPerStage, 0.5)}   p90 ${pct(passesPerStage, 0.9)}`)
-  console.log(`  total score         p50 ${pct(finalScores, 0.5).toLocaleString()}`)
-
-  console.log('\n' + '='.repeat(78))
-  console.log('Read it like this: unskilled win rate should be LOW but non-zero,')
-  console.log('and passes-per-stage should sit near 8. A random-aim bot clearing')
-  console.log('most runs means the game has no skill ceiling.')
-  console.log('='.repeat(78))
-
+  console.log('\n' + '='.repeat(82))
+  console.log('Read it as: the unskilled win rate should be LOW but non-zero, and passes')
+  console.log('per benchmark should sit near 6-8 ACROSS the curve, not just at the start.')
+  console.log('A pace that drifts means target growth and upgrade power are mismatched.')
+  console.log('='.repeat(82))
   world.dispose()
 }
 

@@ -73,37 +73,42 @@
       #cell-act.low .val { color: var(--red); }
       #cell-act.low .pip:not(.spent) { background: var(--red); }
 
-      /* ---------- temperature selector ---------- */
-      #temp-rail {
+      /* ---------- deck rail ---------- */
+      #deck-rail {
         position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
-        display: flex; flex-direction: column; gap: 7px;
-        pointer-events: auto; z-index: 11;
+        display: flex; flex-direction: column; gap: 6px; width: 234px;
       }
-      .temp-opt {
-        display: grid; grid-template-columns: 22px 1fr; align-items: center; gap: 9px;
-        padding: 7px 12px 7px 8px; width: 215px;
-        background: var(--panel); border: 1px solid var(--line);
-        cursor: pointer; transition: border-color .12s, transform .12s, background .12s;
+      .card-row {
+        display: grid; grid-template-columns: 16px 1fr; gap: 9px; align-items: center;
+        padding: 8px 12px; background: var(--panel); border: 1px solid var(--line);
+        opacity: .55;
       }
-      .temp-opt:hover { border-color: #2b4160; }
-      .temp-opt .key {
-        text-align: center; font-weight: 800; font-size: 12px;
-        color: var(--dim); border: 1px solid var(--line); padding: 1px 0;
+      .card-row.now { opacity: 1; transform: translateX(8px); }
+      .card-row .marker { color: var(--dim); font-size: 11px; text-align: center; }
+      .card-row.now .marker { color: var(--lime); }
+      .card-row .cname { font-size: 12px; font-weight: 600; }
+      .card-row .cmeta { font-size: 10px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+      .card-row[data-type="common-crawl"].now { border-color: var(--cyan); }
+      .card-row[data-type="arxiv"].now       { border-color: var(--amber); }
+      .card-row[data-type="synthetic"].now   { border-color: var(--magenta); }
+      .card-row[data-type="rlhf"].now        { border-color: var(--lime); }
+      .deck-foot {
+        font-size: 10px; color: var(--dim); letter-spacing: .1em;
+        text-transform: uppercase; margin-top: 3px; padding-left: 2px;
       }
-      .temp-opt .tname { font-size: 12px; font-weight: 600; }
-      .temp-opt .tmeta { font-size: 10px; color: var(--dim); margin-top: 2px; }
-      .temp-opt.sel { transform: translateX(7px); background: rgba(16, 30, 52, .95); }
-      .temp-opt.sel .key { color: var(--bg); }
-      .temp-opt.locked { opacity: .36; cursor: not-allowed; }
-      .temp-opt.unaffordable .tmeta { color: var(--red); }
-      .temp-opt[data-tier="0"].sel { border-color: var(--cyan); }
-      .temp-opt[data-tier="0"].sel .key { background: var(--cyan); }
-      .temp-opt[data-tier="1"].sel { border-color: var(--lime); }
-      .temp-opt[data-tier="1"].sel .key { background: var(--lime); }
-      .temp-opt[data-tier="2"].sel { border-color: var(--amber); }
-      .temp-opt[data-tier="2"].sel .key { background: var(--amber); }
-      .temp-opt[data-tier="3"].sel { border-color: var(--magenta); }
-      .temp-opt[data-tier="3"].sel .key { background: var(--magenta); }
+
+      /* ---------- boss bar ---------- */
+      #boss-bar {
+        display: none; align-items: baseline; gap: 14px;
+        padding: 9px 18px; background: rgba(40, 6, 16, .92);
+        border-bottom: 1px solid #55202f;
+      }
+      #boss-bar.on { display: flex; }
+      #boss-bar b {
+        color: var(--red); font-size: 12px; font-weight: 800;
+        letter-spacing: .16em; text-transform: uppercase; white-space: nowrap;
+      }
+      #boss-bar span { font-size: 12px; color: #d6a8b4; }
 
       /* ---------- launch readout ---------- */
       .hud-cell.readout { min-width: 96px; text-align: right; }
@@ -224,6 +229,99 @@
         color: #8ba0c0; font-size: 9px;
       }
 
+      /* ---------- shop ---------- */
+      .wallet {
+        display: flex; align-items: baseline; gap: 14px;
+        margin: 6px 0 20px; flex-wrap: wrap;
+      }
+      .wallet .cash {
+        font-family: var(--mono); font-size: 30px; font-weight: 800;
+        color: var(--magenta); font-variant-numeric: tabular-nums;
+      }
+      .wallet .cashnote { font-size: 11px; color: var(--dim); }
+
+      #shop-grid {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 12px; margin-bottom: 20px;
+      }
+      .shop-card {
+        display: flex; flex-direction: column; min-height: 188px;
+        padding: 15px; background: #070d18; border: 1px solid var(--line);
+        cursor: pointer; text-align: left;
+        transition: transform .14s cubic-bezier(.2,.8,.2,1), border-color .14s, background .14s;
+      }
+      .shop-card:hover { transform: translateY(-4px); background: #0b1526; border-color: var(--pick, var(--cyan)); }
+      .shop-card.poor { opacity: .42; cursor: not-allowed; }
+      .shop-card.poor:hover { transform: none; border-color: var(--line); }
+      .shop-card.sold { opacity: .3; }
+      .shop-card[data-prec="blind"]   { --pick: var(--dim); }
+      .shop-card[data-prec="banded"]  { --pick: var(--cyan); }
+      .shop-card[data-prec="precise"] { --pick: var(--amber); }
+      .shop-card .prec { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .shop-card .prec-tag {
+        font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+        color: var(--pick); border: 1px solid currentColor; padding: 1px 5px; font-weight: 700;
+      }
+      .shop-card .prec-note { font-size: 9.5px; color: var(--dim); }
+      .shop-card .cname { font-size: 15px; font-weight: 800; margin-bottom: 7px; line-height: 1.25; }
+      .shop-card .cdesc { font-size: 12px; color: #91a6c6; line-height: 1.5; }
+      .shop-card .cflavor { font-size: 11px; color: var(--dim); font-style: italic; margin-top: 7px; flex: 1; }
+      .shop-card .cfoot {
+        display: flex; justify-content: space-between; align-items: baseline;
+        margin-top: 11px; border-top: 1px solid var(--line); padding-top: 9px;
+      }
+      .shop-card .price {
+        font-family: var(--mono); font-size: 17px; font-weight: 800; color: var(--magenta);
+      }
+      .shop-card .ckey { font-size: 10px; color: var(--dim); }
+
+      .shop-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+      .btn.off { opacity: .35; cursor: not-allowed; }
+      .shop-msg {
+        padding: 9px 14px; margin-bottom: 16px; font-size: 12.5px;
+        border-left: 2px solid var(--lime); background: rgba(157,255,74,.06);
+      }
+      .shop-msg.bad { border-left-color: var(--red); background: rgba(255,77,94,.06); color: #e0a8b0; }
+
+      .target-list {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 1px; background: var(--line); border: 1px solid var(--line);
+        max-height: 54vh; overflow-y: auto;
+      }
+      .target-row {
+        display: grid; grid-template-columns: 54px 1fr auto; gap: 10px; align-items: center;
+        background: #070d18; border: none; padding: 10px 13px; cursor: pointer;
+        font-family: var(--mono); font-size: 12px; color: var(--fg); text-align: left;
+      }
+      .target-row:hover { background: #122238; color: var(--cyan); }
+      .target-row .tid { color: var(--amber); font-weight: 700; }
+      .target-row .ttag { color: var(--dim); font-size: 10px; }
+
+      .deck-strip { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 14px; }
+      .deck-cards { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+      .mini-card {
+        font-family: var(--mono); font-size: 10px; padding: 3px 7px;
+        border: 1px solid var(--line); color: var(--dim);
+      }
+      .mini-card[data-type="common-crawl"] { color: var(--cyan);    border-color: #16384a; }
+      .mini-card[data-type="arxiv"]        { color: var(--amber);   border-color: #45350f; }
+      .mini-card[data-type="synthetic"]    { color: var(--magenta); border-color: #4a1538; }
+      .mini-card[data-type="rlhf"]         { color: var(--lime);    border-color: #2c4420; }
+
+      .score-line { font-size: 15px; margin-bottom: 14px; color: #a9bcd6; }
+      .boss-call {
+        border: 1px solid #55202f; background: rgba(40,6,16,.6);
+        padding: 15px 18px; margin: 16px 0 22px;
+      }
+      .boss-call .boss-name {
+        color: var(--red); font-size: 13px; font-weight: 800;
+        letter-spacing: .16em; text-transform: uppercase; margin-bottom: 7px;
+      }
+      .boss-call .boss-desc { font-size: 13.5px; color: #d6b2bb; line-height: 1.6; }
+      .dimv { color: var(--dim); }
+      .lime { color: var(--lime); }
+      .popup.sig { font-size: 11px; font-weight: 600; }
+
       #boot {
         position: fixed; inset: 0; z-index: 40; background: var(--bg);
         display: flex; align-items: center; justify-content: center;
@@ -245,25 +343,26 @@
 
     <div id="hud">
       <div id="hud-top">
-        <div class="hud-cell" id="cell-stage">
-          <div class="label">Stage</div>
-          <div class="val mono-num" id="stage-val">1</div>
+        <div class="hud-cell" id="cell-round">
+          <div class="label">Funding round</div>
+          <div class="val mono-num" id="round-val">Pre-Seed</div>
+          <div class="label" id="round-name" style="margin-top:5px">1 / 24</div>
         </div>
         <div class="hud-cell" id="cell-bench">
           <div class="label">Benchmark</div>
-          <div class="val mono-num"><span id="score-val">0</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="target-val">1000</span></span></div>
+          <div class="val mono-num"><span id="score-val">0</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="target-val">900</span></span></div>
           <div id="bench-bar"><div id="bench-fill"></div></div>
           <div id="bench-name">—</div>
         </div>
         <div class="hud-cell" id="cell-act">
           <div class="label">Activations</div>
-          <div class="val mono-num"><span id="act-val">20</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="act-max">30</span></span></div>
+          <div class="val mono-num"><span id="act-val">10</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="act-max">10</span></span></div>
           <div class="act-pips" id="act-pips"></div>
         </div>
-        <div class="hud-cell" id="cell-temp">
-          <div class="label">Temperature</div>
-          <div class="val mono-num" id="temp-val">0.7</div>
-          <div class="label" id="temp-name" style="margin-top:5px">Balanced</div>
+        <div class="hud-cell" id="cell-money">
+          <div class="label">Capital</div>
+          <div class="val mono-num" id="money-val">$4</div>
+          <div class="label" style="margin-top:5px">1 = $1B</div>
         </div>
         <div id="hud-spacer"></div>
         <div class="hud-cell readout">
@@ -275,12 +374,18 @@
           <div class="val mono-num" id="mult-val">×1.0</div>
         </div>
         <div class="hud-cell readout">
+          <div class="label">Signal</div>
+          <div class="val mono-num" id="signal-val">0</div>
+        </div>
+        <div class="hud-cell readout">
           <div class="label">Pass</div>
           <div class="val mono-num" id="launch-val">0</div>
         </div>
       </div>
 
-      <div id="temp-rail"></div>
+      <div id="boss-bar"></div>
+
+      <div id="deck-rail"></div>
 
       <div id="charge-wrap"><div id="charge-fill"></div></div>
 
@@ -288,7 +393,7 @@
 
       <div id="help-hint">
         <kbd>◄ ►</kbd> / mouse &nbsp;aim &nbsp;·&nbsp; <kbd>SPACE</kbd> / click &nbsp;charge + fire<br />
-        <kbd>1</kbd>–<kbd>4</kbd> &nbsp;temperature &nbsp;·&nbsp; <kbd>E</kbd> &nbsp;agentic override &nbsp;·&nbsp; <kbd>M</kbd> &nbsp;mute &nbsp;·&nbsp; <kbd>R</kbd> &nbsp;new run
+        <kbd>E</kbd> &nbsp;agentic override &nbsp;·&nbsp; <kbd>M</kbd> &nbsp;mute &nbsp;·&nbsp; <kbd>R</kbd> &nbsp;new run
       </div>
 
       <div id="seed-bar">

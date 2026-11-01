@@ -14,7 +14,7 @@
 
 import { SCORE, SIGNAL, TRANSFORMS } from '../config/balance'
 import type { Rng } from '../core/rng'
-import type { Mods } from '../config/upgrades'
+import type { Mods } from '../config/mods'
 import { isAttentionHead, type Board, type NodeDef, type PocketDef } from './board'
 import type { OrbHandle } from './physics'
 

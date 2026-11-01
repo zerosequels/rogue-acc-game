@@ -14,10 +14,9 @@
  *   npm run propagation -- 8     # boards per setting
  */
 
-import {
-  ECONOMY, LAUNCH, ORB, PHYSICS, SIGNAL, stageTarget, TEMPERATURES, VALIDATOR,
-} from '../src/config/balance'
-import { baseMods, type Mods } from '../src/config/upgrades'
+import { ECONOMY, LAUNCH, ORB, PHYSICS, SIGNAL, VALIDATOR } from '../src/config/balance'
+import { benchmarkAt } from '../src/config/rounds'
+import { baseMods, type Mods } from '../src/config/mods'
 import { deriveRng, type Rng } from '../src/core/rng'
 import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
@@ -29,8 +28,8 @@ import { buildSignalGraph, makeSignalResult, propagate } from '../src/sim/propag
 import { isAttentionHead, type Board } from '../src/sim/board'
 
 const BOARDS = Number(process.argv[2] ?? 6)
+const TARGET = benchmarkAt(0).target
 const PASSES = 26
-const TEMP = 1
 
 /** SIGNAL is `as const`; the sweep needs to write to it. */
 const TUNABLE = SIGNAL as unknown as { retention: number; floor: number }
@@ -64,16 +63,12 @@ interface PassStats {
 function runPass(
   world: PhysicsWorld, board: Board, mods: Mods, angle: number, charge: number, rng: Rng,
 ): PassStats {
-  const tier = TEMPERATURES[TEMP]!
   const events = makeStepEvents()
   const pass = new Pass()
   const graph = buildSignalGraph(board)
   const sig = makeSignalResult()
   const ctx: ScoringContext = {
-    mods,
-    tempScoreMult: tier.scoreMult,
-    tempValue: tier.value,
-    rng,
+    mods, tempScoreMult: 1, tempValue: 0, rng,
     layerBonus: computeLayerBonus(board),
   }
 
@@ -82,7 +77,7 @@ function runPass(
   world.spawnOrb(
     Math.sin(angle) * 0.45, LAUNCH.originY - 0.5,
     Math.sin(angle) * speed, -Math.cos(angle) * speed,
-    { restitution: ORB.restitution * tier.bounce, launchId: 0, scoreScale: 1 },
+    { restitution: ORB.restitution, launchId: 0, scoreScale: 1 },
   )
 
   let contacts = 0
@@ -112,7 +107,7 @@ async function main(): Promise<void> {
 
   console.log('='.repeat(84))
   console.log('rogue/acc — propagation retention sweep')
-  console.log(`boards=${BOARDS}  passes/board=${PASSES}  floor=${SIGNAL.floor}  stage-1 target=${stageTarget(1)}`)
+  console.log(`boards=${BOARDS}  passes/board=${PASSES}  floor=${SIGNAL.floor}  stage-1 target=${TARGET}`)
   console.log('='.repeat(84))
   console.log('\nretention  contacts  signalled  total lit  score p50   score p90   passes to clear')
   console.log('-'.repeat(84))
@@ -142,7 +137,7 @@ async function main(): Promise<void> {
 
     const p50 = median(scores)
     const p90 = scores.slice().sort((a, b) => a - b)[Math.floor(scores.length * 0.9)] ?? 0
-    const toClear = p50 > 0 ? stageTarget(1) / p50 : Infinity
+    const toClear = p50 > 0 ? benchmarkAt(0).target / p50 : Infinity
     const flag =
       retention === 0 ? '   (edges off — baseline)'
       : toClear < 4 ? '   <- too strong'
