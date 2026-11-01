@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Build output
+build/
+dist/
+out/
+*.log
+
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
