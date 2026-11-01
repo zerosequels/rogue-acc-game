@@ -237,6 +237,7 @@ export class Overlays {
         ['Best pass', fmt(t.bestPass), 'amb'],
         ['Passes fired', `${t.passesFired}`, ''],
         ['Weights struck', fmt(t.pinsStruck), ''],
+        ['Signal activations', fmt(t.signalsFired), 'cyan'],
         ['Heads struck', `${t.criticalsStruck}`, 'amb'],
         ['Spikes hit', `${t.spikesHit}`, 'mag'],
         ['Dead neurons', `${t.drains}`, 'bad'],

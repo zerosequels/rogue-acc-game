@@ -348,10 +348,12 @@ export class Game {
       const hop = ev.hop ?? 1
       window.setTimeout(() => {
         const node = ev.nodeId === undefined ? undefined : this.graph?.nodes.get(ev.nodeId)
-        if (node) this.boardView.strike(node)
+        // pulse, not strike: signal does not consume the weight, and dimming
+        // it would tell the player the opposite of the rule.
+        if (node) this.boardView.pulse(node)
         if (ev.points > 0) this.emitPopup(ev)
       }, hop * VISUAL.signalHopMs)
-      this.run.totals.pinsStruck++
+      this.run.totals.signalsFired++
     }
 
     if (this.signal.reached >= 8) this.renderer.punch(0.3)

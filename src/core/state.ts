@@ -33,6 +33,8 @@ export type Phase =
 export interface RunTotals {
   passesFired: number
   pinsStruck: number
+  /** Nodes lit by signal. Separate from pinsStruck: one is aim, one is wiring. */
+  signalsFired: number
   criticalsStruck: number
   spikesHit: number
   drains: number
@@ -45,6 +47,7 @@ function emptyTotals(): RunTotals {
   return {
     passesFired: 0,
     pinsStruck: 0,
+    signalsFired: 0,
     criticalsStruck: 0,
     spikesHit: 0,
     drains: 0,

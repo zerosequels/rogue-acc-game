@@ -166,6 +166,13 @@ export const SIGNAL = {
   geluBoost: 2.0,
   /** An attention head fires every downward edge rather than the usual two. */
   headFiresAllEdges: true,
+  /**
+   * Signal is a bonus laid ON TOP of contact scoring, not a replacement for
+   * it, so it is scaled down relative to a direct hit. Because signal no
+   * longer consumes nodes, EVERY contact fires a full wave — roughly 8 waves
+   * a pass instead of one — so this share is what keeps the bonus a bonus.
+   */
+  bonusShare: 0.5,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -360,6 +367,9 @@ export const VISUAL = {
   glitchMax: 0.32,
   trailLength: 26,
   pinFlashSeconds: 0.42,
+  /** Signal pulses are briefer than contact flashes — they are a bonus
+   *  passing through, not a weight being consumed. */
+  signalFlashSeconds: 0.26,
   /** Wall thickness of a node ring, in world units. Thin reads as schematic. */
   ringThickness: 0.062,
   /** Edge brightness at rest, as a fraction of full. Must stay faint: 70 nodes

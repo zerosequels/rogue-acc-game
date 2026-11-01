@@ -118,15 +118,21 @@ export function propagate(
         const ei = graph.edgeIndex.get(`${f.id}:${toId}`)
         if (ei !== undefined) out.litEdges.push({ index: ei, hop: f.hop })
 
-        // Score before marking seen, so a node already struck by contact
-        // still blocks the wave without being paid twice.
-        const ev = scoreSignal(pass, target, outgoing, f.hop + 1, ctx)
+        // `seenThisWave` is the ONLY thing bounding this traversal, and it is
+        // per-wave rather than per-pass. Signal no longer consumes nodes, so
+        // a node already lit by an earlier contact's wave is lit again by
+        // this one — that is the bonus working as intended. The wave still
+        // cannot revisit within itself, and the graph is a DAG, so it
+        // terminates regardless.
         seenThisWave.add(toId)
-        if (!ev) continue
+        const ev = scoreSignal(pass, target, outgoing, f.hop + 1, ctx)
 
+        // Keep walking even when the node paid nothing (Dropout refused, or
+        // MoE is still asleep) — the signal passes THROUGH it either way.
+        next.push({ id: toId, power: outgoing, hop: f.hop + 1 })
+        if (!ev) continue
         out.events.push(ev)
         out.reached++
-        next.push({ id: toId, power: outgoing, hop: f.hop + 1 })
       }
     }
 

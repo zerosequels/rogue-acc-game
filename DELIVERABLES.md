@@ -101,6 +101,28 @@ Goal: the new scoring core, tuned. Upgrades applied by debug command, not bought
   screenshots mid-propagation. The smoke test drives a whole run and is far
   too slow for visual iteration.
 
+**Pass 2 correction — signal is a bonus, not a consumption**
+
+Signal originally marked nodes as struck, exactly like a ball contact. That was
+wrong, and the measurement showed why: contacts per pass fell from 10.0 to 4.3
+as retention rose, because the ball was being starved by its own network — the
+first contact ate most of the board and every later contact found it spent.
+
+Signal now:
+
+- does **not** consume the node (it can still be hit by the ball afterwards,
+  and lit again by a later contact's wave),
+- does **not** advance the multiplier tier — the ladder stays a measure of how
+  well you AIMED, while signal measures how well your network is WIRED,
+- pulses rather than dims in the render layer, because a dimmed node reads as
+  "already used" and would tell the player the opposite of the rule.
+
+Contacts are now a flat 10.1 at every retention. Signal activations run to ~66
+per pass at 0.45 (every contact fires a wave), scaled by `SIGNAL.bonusShare`
+to keep a bonus a bonus. Pace landed at 8.9 passes to clear against a target
+of 8. Termination never depended on the consumption rule: `propagate` carries
+its own per-wave visited set and the edge graph is a DAG by construction.
+
 ## Pass 3 — Deck, shop, money
 
 Goal: the complete v2 loop.

@@ -48,6 +48,8 @@ export class Pass {
   spikeApplied = false
   /** Nodes struck per layer, for Sparse MoE's wake condition. */
   readonly struckByLayer = new Map<number, number>()
+  /** Nodes lit by signal this pass. Bonus only — see the note on scoreSignal. */
+  signalCount = 0
   /** True once any node has scored — Embedding keys off this. */
   anyStruck = false
   /** Set by an EOS bucket; the caller must stop the pass. */
@@ -88,6 +90,7 @@ export class Pass {
     this.eventCount = 0
     this.spikeApplied = false
     this.anyStruck = false
+    this.signalCount = 0
     this.ended = false
     this.money = 0
     this.echoes.length = 0
@@ -218,8 +221,24 @@ export function scorePin(
 }
 
 /**
- * Score a node reached by signal rather than contact. `power` is the fraction
- * of the originating strike still carried at this hop.
+ * Score a node reached by signal rather than contact.
+ *
+ * Signal is a BONUS, and that word carries real mechanical weight:
+ *
+ *   - It does NOT consume the node. A weight lit by signal can still be hit
+ *     by the ball afterwards for its full contact value, and can be lit again
+ *     by a later contact's wave. Consuming nodes made the first contact of a
+ *     pass eat most of the board, which is why measured contacts fell from
+ *     10 to 4.8 — the ball was being starved by its own network.
+ *   - It does NOT advance the multiplier tier. The ladder stays a measure of
+ *     how well you AIMED; signal is a measure of how well your network is
+ *     WIRED. Keeping them separate is what stops a good build from erasing
+ *     the skill component.
+ *
+ * Termination does not depend on any of this: `propagate` carries its own
+ * per-wave visited set, and the edge graph is a DAG by construction.
+ *
+ * `power` is the fraction of the originating strike still carried at this hop.
  */
 export function scoreSignal(
   pass: Pass,
@@ -228,26 +247,35 @@ export function scoreSignal(
   hop: number,
   ctx: ScoringContext,
 ): ScoreEvent | null {
-  if (pass.struck.has(node.id)) return null
-
-  const situational = situationalMult(node, pass, ctx)
-  registerStrike(pass, node)
-  if (situational === null) {
-    pass.anyStruck = true
-    return { points: 0, x: node.x, y: node.y, kind: 'dud', tierMult: pass.tierMult(ctx.mods), hop, nodeId: node.id }
+  // Dropout still gets to refuse — a flaky weight is flaky however it fires.
+  if (node.transforms.includes('dropout') && ctx.rng.next() < TRANSFORMS.dropoutChance) {
+    return null
   }
+
+  let situational = 1
+  if (node.transforms.includes('dropout')) situational *= TRANSFORMS.dropoutMult
+  if (node.transforms.includes('sparse-moe')) {
+    // MoE still reads CONTACT counts: it wakes when the layer is genuinely
+    // being worked, not when its own wave brushes past.
+    const inLayer = pass.struckByLayer.get(node.layer) ?? 0
+    if (inLayer < TRANSFORMS.moeThreshold) return null
+    situational *= TRANSFORMS.moeMult
+  }
+  // Embedding is deliberately absent: it rewards the FIRST weight the ball
+  // touches, and a signal wave never touches anything.
 
   const { mods } = ctx
   const tierMult = pass.tierMult(mods)
   const base = nodeBaseValue(node, ctx)
   const points = Math.round(
-    base * situational * power * mods.pinValueMult * tierMult *
+    base * situational * power * SIGNAL_BONUS_SHARE * mods.pinValueMult * tierMult *
       ctx.tempScoreMult * mods.scoreMult,
   )
+  if (points <= 0) return null
 
   pass.score += points
   pass.eventCount++
-  pass.anyStruck = true
+  pass.signalCount++
 
   if (node.transforms.includes('checkpoint')) {
     pass.echoes.push({
@@ -368,5 +396,7 @@ function applyBucketEcho(pass: Pass, pocket: PocketDef, points: number): void {
 export function returnsToken(pocket: PocketDef): boolean {
   return pocket.transform === 'beam-search'
 }
+
+const SIGNAL_BONUS_SHARE = SIGNAL.bonusShare
 
 export { SIGNAL }

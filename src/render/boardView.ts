@@ -377,11 +377,24 @@ export class BoardView {
     return target
   }
 
+  /** A ball contact. Consumes the weight for the pass, so it dims afterwards. */
   strike(node: NodeDef): void {
     const v = this.visuals.get(node.id)
     if (!v) return
     v.flash = VISUAL.pinFlashSeconds
     v.spent = true
+  }
+
+  /**
+   * A signal activation. Flashes but does NOT mark the weight spent, because
+   * signal is a bonus and leaves the node available for the ball. The visual
+   * has to say that: a dimmed node reads as "already used", and dimming on
+   * signal would tell the player the opposite of the rule.
+   */
+  pulse(node: NodeDef): void {
+    const v = this.visuals.get(node.id)
+    if (!v) return
+    v.flash = Math.max(v.flash, VISUAL.signalFlashSeconds)
   }
 
   /** Light an edge. Pass 2 calls this as signal travels; harmless until then. */
