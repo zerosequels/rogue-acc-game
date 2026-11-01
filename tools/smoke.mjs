@@ -136,14 +136,19 @@ console.log(`✓ audio live (context ${audio.state}, muted=${audio.muted})`)
 // Screen shake must actually displace the frustum, not just the shader.
 const shook = await page.evaluate(() => {
   const r = window.game?.['renderer']
-  const before = r.camera.top
+  const base = r.camera.top
   r.punch(1.5)
-  r.render(1 / 60)
-  const after = r.camera.top
-  return { before, after, moved: Math.abs(after - before) }
+  // Shake is a sinusoid, so a single frame can legitimately sample a zero
+  // crossing. Take the peak over several frames instead of one sample.
+  let peak = 0
+  for (let i = 0; i < 12; i++) {
+    r.render(1 / 60)
+    peak = Math.max(peak, Math.abs(r.camera.top - base))
+  }
+  return { peak }
 })
-if (shook.moved < 0.001) throw new Error('punch() did not move the camera: ' + JSON.stringify(shook))
-console.log(`✓ screen shake displaces camera (${shook.moved.toFixed(3)} world units)`)
+if (shook.peak < 0.02) throw new Error('punch() did not move the camera: ' + JSON.stringify(shook))
+console.log(`✓ screen shake displaces camera (peak ${shook.peak.toFixed(3)} world units)`)
 
 // ---------------------------------------------------------------------------
 // Full-run drive: the overlay -> upgrade -> next-stage path is the part the

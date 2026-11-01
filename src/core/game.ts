@@ -34,9 +34,9 @@ import {
   type ScoreEvent,
   type ScoringContext,
 } from '../sim/scoring'
-import { fallbackBoard, generateCandidate, boardRngFor } from '../sim/boardgen'
+import { generateBoard, boardRngFor } from '../sim/boardgen'
 import { probeBoard } from '../sim/validator'
-import type { Board, PinDef } from '../sim/board'
+import { isAttentionHead, type Board, type NodeDef } from '../sim/board'
 import { resolveCriticalStrike } from '../sim/effects'
 import { Renderer } from '../render/scene'
 import { BoardView } from '../render/boardView'
@@ -81,7 +81,7 @@ export class Game {
    */
   private passRestitution = 0
   /** Weights detonated during the current pass, restored when the next begins. */
-  private detonatedThisPass: PinDef[] = []
+  private detonatedThisPass: NodeDef[] = []
   /** Smoothed heat, so the backdrop eases rather than snaps. */
   private displayHeat = 0
 
@@ -141,6 +141,13 @@ export class Game {
     this.hud.invalidate()
     this.hud.clearPopups()
     this.updateSeedInUrl(seed)
+
+    // One board for the whole run. This is the object every upgrade lands on.
+    this.boardView.clear()
+    this.board = this.buildRunBoard()
+    this.physics.loadBoard(this.board)
+    this.boardView.build(this.board)
+
     this.loadStage()
   }
 
@@ -148,6 +155,11 @@ export class Game {
   // Stage loading: generate → prune → validate → accept or retry
   // -------------------------------------------------------------------------
 
+  /**
+   * Start a benchmark. In v2 the board is NOT rebuilt here — it is the run's
+   * machine, generated once in `startRun` and carrying every upgrade the
+   * player has bought. All this does is clear the previous attempt off it.
+   */
   private loadStage(): void {
     this.run.phase = 'stage-intro'
     this.physics.despawnAllOrbs()
@@ -155,14 +167,11 @@ export class Game {
     this.pass.reset()
     this.detonatedThisPass.length = 0
 
-    const board = this.buildValidatedBoard()
-    this.board = board
+    const board = this.board
+    if (!board) throw new Error('loadStage before the run board was built')
 
-    this.physics.loadBoard(board)
-    this.boardView.build(board)
-
+    this.boardView.resetPass(board)
     this.run.beginStage()
-    this.launcher.normaliseSelection(this.run.mods)
     this.launcher.enabled = false
 
     this.syncHud()
@@ -170,39 +179,42 @@ export class Game {
   }
 
   /**
-   * Generate candidates until one passes the validator, then fall back to the
-   * handcrafted board. Synchronous and blocking: a stage cannot start without a
-   * board, and the whole loop is a few milliseconds.
+   * Build the one board this run is played on. Geometry is fixed; the seed
+   * varies wiring and starting state. The validator runs here and only here,
+   * so it can afford to be thorough — this is once per run, not once a stage.
    */
-  private buildValidatedBoard(): Board {
-    const { seed, stage } = this.run
+  private buildRunBoard(): Board {
+    const { seed } = this.run
 
     for (let attempt = 0; attempt < VALIDATOR.maxAttempts; attempt++) {
-      const rng = boardRngFor(seed, stage, attempt)
-      const candidate = generateCandidate(rng, `${seed}/s${stage}/a${attempt}`)
-
-      // Pruning is a board-shaping upgrade, so it must apply BEFORE validation
-      // — the player plays the pruned board, so that is what we must validate.
-      this.applyPruning(candidate, attempt)
-
-      const stats = probeBoard(candidate, seed, stage, attempt)
+      const candidate = generateBoard(boardRngFor(seed, attempt), `${seed}/a${attempt}`)
+      const stats = probeBoard(candidate, seed, attempt)
       candidate.stats = stats
       if (stats.accepted) return candidate
     }
 
-    const fb = fallbackBoard(`${seed}/s${stage}/fallback`)
-    this.applyPruning(fb, 0)
-    return fb
+    // Never silently ship an unvalidated board: take the last candidate but
+    // mark it, so the stage-intro diagnostics say so out loud.
+    const last = generateBoard(boardRngFor(seed, VALIDATOR.maxAttempts - 1), `${seed}/fallback`)
+    last.stats = { ...probeBoard(last, seed, 0), fallback: true, accepted: true }
+    return last
   }
 
-  /** Prune Dead Neurons: remove a fraction of ordinary weights, never heads. */
-  private applyPruning(board: Board, attempt: number): void {
-    const frac = this.run.mods.pruneFraction
-    if (frac <= 0) return
-    const rng = deriveRng(this.run.seed, 'prune', this.run.stage, attempt)
-    const ordinary = board.pins.filter((p) => !p.critical && !p.removed)
-    const count = Math.floor(ordinary.length * frac)
-    for (const pin of rng.sample(ordinary, count)) pin.removed = true
+  /**
+   * Prune Dead Neurons. On a persistent board this applies the moment the
+   * upgrade is taken rather than at board build, and removal lasts the run.
+   */
+  private applyPruning(fraction: number): void {
+    const board = this.board
+    if (!board || fraction <= 0) return
+    const rng = deriveRng(this.run.seed, 'prune', this.run.stage)
+    const ordinary = board.nodes.filter((n) => !isAttentionHead(n) && !n.removed)
+    const count = Math.floor(ordinary.length * fraction)
+    for (const node of rng.sample(ordinary, count)) {
+      this.physics.removePin(node)
+      this.boardView.retire(node)
+    }
+    this.boardView.markLabelsDirty()
   }
 
   private beginPlay(): void {
@@ -321,15 +333,15 @@ export class Game {
       this.boardView.strike(hit.pin)
       this.emitPopup(ev)
       this.run.totals.pinsStruck++
-      if (hit.pin.critical) this.run.totals.criticalsStruck++
+      if (isAttentionHead(hit.pin)) this.run.totals.criticalsStruck++
       if (ev.kind === 'hallucination' || ev.kind === 'critical') this.renderer.punch(0.22)
 
       // Pitch climbs with the chain, so a long cascade is an ascending run.
       if (ev.kind === 'hallucination') this.audio.hallucination()
-      else if (hit.pin.critical) this.audio.criticalTick(this.pass.chain, this.passHeat)
+      else if (isAttentionHead(hit.pin)) this.audio.criticalTick(this.pass.chain, this.passHeat)
       else this.audio.pinTick(this.pass.chain, this.passHeat)
 
-      if (hit.pin.critical) this.resolveCritical(hit.pin, hit.orb, ctx)
+      if (isAttentionHead(hit.pin)) this.resolveCritical(hit.pin, hit.orb, ctx)
     }
 
     // --- pocket landings ---
@@ -363,7 +375,7 @@ export class Game {
    * headless harness can execute them too; this only turns the outcome into
    * visuals and sound.
    */
-  private resolveCritical(pin: PinDef, orb: OrbHandle, ctx: ScoringContext): void {
+  private resolveCritical(pin: NodeDef, orb: OrbHandle, ctx: ScoringContext): void {
     const outcome = resolveCriticalStrike(
       this.physics,
       this.pass,
@@ -443,7 +455,11 @@ export class Game {
   private pickUpgrade(upgrade: Upgrade): void {
     this.audio.unlock()
     this.audio.uiConfirm()
+    const pruneBefore = this.run.mods.pruneFraction
     this.run.takeUpgrade(upgrade)
+    const pruneDelta = this.run.mods.pruneFraction - pruneBefore
+    if (pruneDelta > 0) this.applyPruning(pruneDelta)
+    this.boardView.markLabelsDirty()
     this.launcher.normaliseSelection(this.run.mods)
     this.hud.invalidate()
     this.advanceStage()

@@ -37,18 +37,35 @@ Locked from the design interview:
 Goal: the current game, on the new board, in the new look. No new maths, so the
 art direction can be judged on its own.
 
-- [ ] Board model carries nodes (level, transforms, layer), edges, buckets (level, transform)
-- [ ] Fixed 9-layer lattice generator; seed varies starting state, not geometry
-- [ ] Edge topology: 2-3 downward links per node, no sideways, no upward
-- [ ] Board generated once at run start and persists across every benchmark
-- [ ] Validator runs once per run (can afford to be stricter)
-- [ ] Render: hollow rings, not filled circles
-- [ ] Render: edges as hairlines, one draw call
-- [ ] Render: buckets as open wireframe boxes
-- [ ] Render: monospace glyph layer for levels and transform names
-- [ ] Background: sparse hairline grid replaces the circuit shader
-- [ ] Existing scoring still works end to end
-- [ ] `npm run smoke` green, screenshot reviewed
+- [x] Board model carries nodes (level, transforms, layer), edges, buckets (level, transform)
+- [x] Fixed 9-layer lattice generator; seed varies starting state, not geometry
+- [x] Edge topology: 2-3 downward links per node, no sideways, no upward
+- [x] Board generated once at run start and persists across every benchmark
+- [x] Validator runs once per run (can afford to be stricter)
+- [x] Render: hollow rings, not filled circles
+- [x] Render: edges as hairlines, one draw call (LineSegments, per-vertex colour)
+- [x] Render: buckets as open wireframe boxes
+- [x] Render: monospace glyph layer for levels and transform names
+- [x] Background: sparse hairline grid replaces the circuit shader
+- [x] Existing scoring still works end to end
+- [x] `npm run smoke` green, screenshot reviewed
+
+**Pass 1 notes**
+
+- `critical` is gone from the model. v1's critical pin is v2's `attention-head`
+  transform — same mechanical role, but now something a node can be *given*,
+  which is what lets the shop sell it in Pass 3.
+- Attention heads are placed **unconditionally** (`startingAttentionHeads: 3`),
+  not rolled from the starter-transform pool. Rolling them allowed a board with
+  zero heads, which silently removes the tier bonus, the split trigger and the
+  detonation trigger from an entire run.
+- Glyph labels are one `CanvasTexture` over the whole board, redrawn only on
+  `markLabelsDirty()`. The lattice is fixed and labels only change on purchase,
+  so 70 labels cost one quad and nothing per frame.
+- Bloom had to come down hard (0.75 → 0.42, threshold 0.16 → 0.33). It was
+  tuned for filled discs and was filling the rings back in, undoing the
+  wireframe read.
+- `BoardView.flashEdge(i)` exists and is wired but unused until Pass 2.
 
 ## Pass 2 — Signal & levels
 

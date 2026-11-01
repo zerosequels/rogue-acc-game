@@ -12,7 +12,7 @@
  */
 
 import { ARCHETYPE_LABEL, type Upgrade } from '../config/upgrades'
-import type { Board } from '../sim/board'
+import { countActive, isAttentionHead, type Board } from '../sim/board'
 import type { RunState } from '../core/state'
 import { clearLine, failLine, pressureLine, VICTORY_LINE } from '../flavor/text'
 import { fmt } from './hud'
@@ -71,9 +71,10 @@ export class Overlays {
       statGrid([
         ['Target', fmt(run.target), ''],
         ['Activations', `${run.activations}`, run.activations <= 5 ? 'bad' : ''],
-        ['Weights', `${board.pins.filter((p) => !p.removed).length}`, ''],
+        ['Weights', `${countActive(board)}`, ''],
         ['Layers', `${board.layers}`, ''],
-        ['Attention heads', `${board.pins.filter((p) => p.critical && !p.removed).length}`, 'amb'],
+        ['Connections', `${board.edges.length}`, 'cyan'],
+        ['Attention heads', `${board.nodes.filter((n) => isAttentionHead(n) && !n.removed).length}`, 'amb'],
       ]),
       this.boardDiagnostics(board),
       button('ENGAGE  ▸', onBegin),

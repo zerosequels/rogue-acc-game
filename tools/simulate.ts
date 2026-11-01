@@ -17,12 +17,12 @@
 import { ECONOMY, LAUNCH, ORB, PHYSICS, SCORE, stageTarget, STAGES, TEMPERATURES, VALIDATOR } from '../src/config/balance'
 import { baseMods, rollOffers, type Mods } from '../src/config/upgrades'
 import { deriveRng, mintSeed, Rng } from '../src/core/rng'
-import { boardRngFor, fallbackBoard, generateCandidate } from '../src/sim/boardgen'
+import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
 import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
 import { resolveCriticalStrike } from '../src/sim/effects'
-import type { Board } from '../src/sim/board'
+import { isAttentionHead, type Board } from '../src/sim/board'
 
 const SEEDS = Number(process.argv[2] ?? 24)
 
@@ -34,21 +34,23 @@ function pct(xs: number[], p: number): number {
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
 
 /** Build a validated board exactly the way the game does. */
-function buildBoard(seed: string, stage: number, mods: Mods): { board: Board; attempts: number; fellBack: boolean } {
+function buildBoard(seed: string, _stage: number, mods: Mods): Board {
   for (let attempt = 0; attempt < VALIDATOR.maxAttempts; attempt++) {
-    const board = generateCandidate(boardRngFor(seed, stage, attempt), `${seed}/s${stage}`)
+    const board = generateBoard(boardRngFor(seed, attempt), `${seed}/a${attempt}`)
     if (mods.pruneFraction > 0) {
-      const rng = deriveRng(seed, 'prune', stage, attempt)
-      const ordinary = board.pins.filter((p) => !p.critical && !p.removed)
-      for (const pin of rng.sample(ordinary, Math.floor(ordinary.length * mods.pruneFraction))) {
-        pin.removed = true
+      const rng = deriveRng(seed, 'prune', attempt)
+      const ordinary = board.nodes.filter((n) => !isAttentionHead(n) && !n.removed)
+      for (const n of rng.sample(ordinary, Math.floor(ordinary.length * mods.pruneFraction))) {
+        n.removed = true
       }
     }
-    const stats = probeBoard(board, seed, stage, attempt)
+    const stats = probeBoard(board, seed, attempt)
     board.stats = stats
-    if (stats.accepted) return { board, attempts: attempt + 1, fellBack: false }
+    if (stats.accepted) return board
   }
-  return { board: fallbackBoard(seed), attempts: VALIDATOR.maxAttempts, fellBack: true }
+  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fallback`)
+  last.stats = { ...probeBoard(last, seed, 0), fallback: true, accepted: true }
+  return last
 }
 
 /**
@@ -104,7 +106,7 @@ function simulatePass(
     world.stepOnce(events)
     for (const hit of events.pinHits) {
       const ev = scorePin(pass, hit.pin, hit.orb, ctx)
-      if (ev && hit.pin.critical) {
+      if (ev && isAttentionHead(hit.pin)) {
         const outcome = resolveCriticalStrike(world, pass, hit.pin, hit.orb, ctx, mods, ORB.restitution * tier.bounce)
         for (const d of outcome.detonated) detonated.push(d.pin)
       }
@@ -142,9 +144,9 @@ async function main(): Promise<void> {
   for (let i = 0; i < SEEDS; i++) {
     const seed = `SWEEP-${i}`
     for (let stage = 1; stage <= 3; stage++) {
-      const { board, attempts, fellBack } = buildBoard(seed, stage, mods0)
-      attemptCounts.push(attempts)
-      if (fellBack) fallbacks++
+      const board = buildBoard(seed, stage, mods0)
+      attemptCounts.push(board.stats.attempts)
+      if (board.stats.fallback) fallbacks++
       else {
         medians.push(board.stats.medianPins)
         settles.push(board.stats.settleRate)
@@ -170,7 +172,7 @@ async function main(): Promise<void> {
     let n = 0
     for (let i = 0; i < Math.min(SEEDS, 12); i++) {
       const seed = `SWEEP-${i}`
-      const { board } = buildBoard(seed, 1, mods0)
+      const board = buildBoard(seed, 1, mods0)
       const rng = deriveRng(seed, 'sim', ti)
       for (let k = 0; k < 14; k++) {
         const angle = rng.range(-LAUNCH.maxAngle, LAUNCH.maxAngle)
@@ -214,7 +216,7 @@ async function main(): Promise<void> {
 
     while (stage <= STAGES.count) {
       const target = stageTarget(stage)
-      const { board } = buildBoard(seed, stage, mods)
+      const board = buildBoard(seed, stage, mods)
       const rng = deriveRng(seed, 'play', stage)
       let score = 0
       let passes = 0

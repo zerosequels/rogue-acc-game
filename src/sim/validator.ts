@@ -33,10 +33,10 @@ export interface ProbeResult {
  * Simulate probe drops against `board`. Mutates nothing on the board except
  * `stats`. The caller owns accept/reject.
  */
-export function probeBoard(board: Board, seed: string, stage: number, attempt: number): BoardStats {
+export function probeBoard(board: Board, seed: string, attempt: number): BoardStats {
   const world = new PhysicsWorld()
   const events: StepEvents = makeStepEvents()
-  const rng = deriveRng(seed, 'validate', stage, attempt)
+  const rng = deriveRng(seed, 'validate', attempt)
   const maxSteps = Math.ceil(VALIDATOR.probeSeconds / PHYSICS.dt)
 
   const results: ProbeResult[] = []

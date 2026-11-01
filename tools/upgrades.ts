@@ -16,12 +16,12 @@
 import { ECONOMY, LAUNCH, ORB, PHYSICS, TEMPERATURES, VALIDATOR } from '../src/config/balance'
 import { baseMods, UPGRADES, type Mods, type Upgrade } from '../src/config/upgrades'
 import { deriveRng, type Rng } from '../src/core/rng'
-import { boardRngFor, fallbackBoard, generateCandidate } from '../src/sim/boardgen'
+import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
 import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
 import { resolveCriticalStrike } from '../src/sim/effects'
-import type { Board } from '../src/sim/board'
+import { isAttentionHead, type Board } from '../src/sim/board'
 
 const BOARDS = Number(process.argv[2] ?? 6)
 
@@ -51,19 +51,23 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
 }
 
-function buildBoard(seed: string, stage: number, mods: Mods): Board {
+function buildBoard(seed: string, _stage: number, mods: Mods): Board {
   for (let attempt = 0; attempt < VALIDATOR.maxAttempts; attempt++) {
-    const board = generateCandidate(boardRngFor(seed, stage, attempt), `${seed}/s${stage}`)
+    const board = generateBoard(boardRngFor(seed, attempt), `${seed}/a${attempt}`)
     if (mods.pruneFraction > 0) {
-      const rng = deriveRng(seed, 'prune', stage, attempt)
-      const ord = board.pins.filter((p) => !p.critical && !p.removed)
-      for (const pin of rng.sample(ord, Math.floor(ord.length * mods.pruneFraction))) pin.removed = true
+      const rng = deriveRng(seed, 'prune', attempt)
+      const ordinary = board.nodes.filter((n) => !isAttentionHead(n) && !n.removed)
+      for (const n of rng.sample(ordinary, Math.floor(ordinary.length * mods.pruneFraction))) {
+        n.removed = true
+      }
     }
-    const stats = probeBoard(board, seed, stage, attempt)
+    const stats = probeBoard(board, seed, attempt)
     board.stats = stats
     if (stats.accepted) return board
   }
-  return fallbackBoard(seed)
+  const last = generateBoard(boardRngFor(seed, 0), `${seed}/fallback`)
+  last.stats = { ...probeBoard(last, seed, 0), fallback: true, accepted: true }
+  return last
 }
 
 const detonated: { removed: boolean }[] = []
@@ -99,7 +103,7 @@ function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, c
       // Chain Reaction / Explosive Weights now live in the sim layer, so the
       // harness can finally execute them — they used to read 0% because the
       // implementation sat in core/game.ts, out of reach.
-      if (ev && h.pin.critical) {
+      if (ev && isAttentionHead(h.pin)) {
         const outcome = resolveCriticalStrike(world, pass, h.pin, h.orb, ctx, mods, ORB.restitution * tier.bounce)
         for (const d of outcome.detonated) detonated.push(d.pin)
       }

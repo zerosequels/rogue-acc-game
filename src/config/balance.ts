@@ -35,7 +35,7 @@ export const PIN = {
   /** Pins are deliberately LARGER than orbs: prevents tunnelling and makes
    *  every bounce read clearly on screen. Do not invert this ratio. */
   radius: 0.3,
-  criticalRadius: 0.42,
+  criticalRadius: 0.52,
   /** Restitution FLOOR only. Colliders combine with CoefficientCombineRule.Max,
    *  so the orb's temperature-scaled restitution is what actually governs
    *  bounciness above this value. Keep it low or temperature stops mattering. */
@@ -221,23 +221,30 @@ export function stageTarget(stage: number): number {
 // ---------------------------------------------------------------------------
 
 export const BOARDGEN = {
-  pinCountMin: 90,
-  pinCountMax: 140,
-  layersMin: 11,
-  layersMax: 16,
-  criticalPinsMin: 3,
-  criticalPinsMax: 5,
-  /** Critical pins are biased toward the lower half of the board, where a hit
-   *  still has cascade left to pay off. 0 = top, 1 = bottom. */
-  criticalBiasLow: 0.3,
-  pocketCountMin: 5,
-  pocketCountMax: 7,
+  /**
+   * v2: the lattice is FIXED. Geometry never varies between runs or seeds —
+   * a standardised layout plus a board that persists all run means the player
+   * must be able to learn it. The seed varies edge wiring and starting state
+   * instead (see `boardgen.ts`).
+   */
+  layers: 9,
+  /** Even rows get this many nodes, odd rows one fewer and a half-cell shift. */
+  nodesPerLayer: 8,
+  /** Chance a node wires a third downward edge rather than two. */
+  thirdEdgeChance: 0.34,
+  /** Nodes that begin at level 2 rather than 1. */
+  startingPromotions: 3,
+  /** Attention heads placed unconditionally at run start. Never zero: the
+   *  tier bonus, split trigger and detonation trigger all key off them. */
+  startingAttentionHeads: 3,
+  /** Additional nodes that begin carrying one of the mild transforms. */
+  startingTransforms: 2,
+  startingBucketTransformChance: 0.55,
+  pocketCount: 6,
   spikePocketsMin: 1,
   spikePocketsMax: 2,
-  /** Horizontal inset from the walls for pin placement. */
-  edgeInset: 0.95,
-  /** Max jitter applied to a lattice position, as a fraction of cell size. */
-  jitter: 0.3,
+  /** Horizontal inset from the rails for node placement. */
+  edgeInset: 1.15,
   pocketWallHeight: 1.7,
 } as const
 
@@ -264,11 +271,11 @@ export const VALIDATOR = {
 // ---------------------------------------------------------------------------
 
 export const VISUAL = {
-  bloomStrength: 0.75,
-  bloomRadius: 0.5,
-  bloomThreshold: 0.16,
+  bloomStrength: 0.42,
+  bloomRadius: 0.42,
+  bloomThreshold: 0.33,
   /** Extra bloom at max temperature. */
-  bloomTempBoost: 0.5,
+  bloomTempBoost: 0.3,
   /**
    * Glitch intensity at max temperature. Tuned against a screenshot, not by
    * eye in isolation: above ~0.35 the chromatic split starts competing with
@@ -277,6 +284,16 @@ export const VISUAL = {
   glitchMax: 0.32,
   trailLength: 26,
   pinFlashSeconds: 0.42,
+  /** Wall thickness of a node ring, in world units. Thin reads as schematic. */
+  ringThickness: 0.062,
+  /** Edge brightness at rest, as a fraction of full. Must stay faint: 70 nodes
+   *  of edges at any real brightness becomes a bright haze, not a diagram. */
+  edgeRestBrightness: 0.13,
+  /** How fast a signalled edge fades back to rest. */
+  edgeFadeRate: 2.6,
+  /** Resolution of the glyph-label canvas. The label layer is one texture over
+   *  the whole board, redrawn only when levels or transforms change. */
+  labelPixelsPerUnit: 54,
   /** Horizontal breathing room either side of the board. */
   cameraPadding: 1.0,
   /** Clearance above the launcher, so it clears the HUD bar. */
@@ -296,7 +313,7 @@ export const COLORS = {
   pin: 0x4e9ad4,
   pinLit: 0x35e4ff,
   pinSpent: 0x22435f,
-  critical: 0xffb340,
+  critical: 0xffa21f,
   criticalLit: 0xfff0c0,
   orb: 0x9dff4a,
   orbHot: 0xff3cc8,
@@ -305,4 +322,8 @@ export const COLORS = {
   drain: 0x6e2233,
   pocket: 0x23496e,
   trail: 0x35e4ff,
+  /** Connection lines at rest. Scaled down hard by edgeRestBrightness. */
+  edge: 0x4fd8ff,
+  drainLine: 0xd3405a,
+  pocketLine: 0x4d8fc4,
 } as const

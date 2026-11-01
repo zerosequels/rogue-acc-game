@@ -18,13 +18,13 @@
 
 import { LAUNCH } from '../config/balance'
 import type { Mods } from '../config/upgrades'
-import type { PinDef } from './board'
+import { isAttentionHead, type NodeDef } from './board'
 import type { OrbHandle, PhysicsWorld } from './physics'
 import { scoreDetonation, type Pass, type ScoreEvent, type ScoringContext } from './scoring'
 
 export interface CriticalOutcome {
   /** Weights destroyed by Explosive Weights, with the points each paid. */
-  detonated: { pin: PinDef; event: ScoreEvent | null }[]
+  detonated: { pin: NodeDef; event: ScoreEvent | null }[]
   /** Token spawned by Chain Reaction, if any. */
   split: OrbHandle | null
 }
@@ -38,7 +38,7 @@ const EMPTY: CriticalOutcome = { detonated: [], split: null }
 export function resolveCriticalStrike(
   world: PhysicsWorld,
   pass: Pass,
-  pin: PinDef,
+  pin: NodeDef,
   orb: OrbHandle,
   ctx: ScoringContext,
   mods: Mods,
@@ -55,7 +55,7 @@ export function resolveCriticalStrike(
     for (const victim of near) {
       // Heads survive their neighbours' detonations, so a cluster of heads
       // cannot cascade into clearing the board.
-      if (victim.critical) continue
+      if (isAttentionHead(victim)) continue
       if (destroyed >= mods.detonationCap) break
       const event = scoreDetonation(pass, victim, ctx)
       world.removePin(victim)

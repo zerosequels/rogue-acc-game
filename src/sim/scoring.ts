@@ -15,7 +15,7 @@
 import { SCORE } from '../config/balance'
 import type { Rng } from '../core/rng'
 import type { Mods } from '../config/upgrades'
-import type { PinDef, PocketDef } from './board'
+import { isAttentionHead, type NodeDef, type PocketDef } from './board'
 import type { OrbHandle } from './physics'
 
 export interface ScoreEvent {
@@ -108,23 +108,23 @@ export interface ScoringContext {
  */
 export function scorePin(
   pass: Pass,
-  pin: PinDef,
+  pin: NodeDef,
   orb: OrbHandle,
   ctx: ScoringContext,
 ): ScoreEvent | null {
   if (pass.struck.has(pin.id)) return null
   pass.struck.add(pin.id)
-  if (pin.critical) pass.criticalHits++
+  if (isAttentionHead(pin)) pass.criticalHits++
 
   const { mods } = ctx
   const tierMult = pass.tierMult(mods)
 
   // Gradient Surge ramps base value with every weight already struck.
   const surge = mods.gradientSurge * (pass.struck.size - 1)
-  const base = (pin.critical ? SCORE.criticalPinValue : SCORE.basePinValue) + surge
+  const base = (isAttentionHead(pin) ? SCORE.criticalPinValue : SCORE.basePinValue) + surge
 
   let points = base * mods.pinValueMult * tierMult * ctx.tempScoreMult * orb.scoreScale * mods.scoreMult
-  let kind: ScoreEvent['kind'] = pin.critical ? 'critical' : 'pin'
+  let kind: ScoreEvent['kind'] = isAttentionHead(pin) ? 'critical' : 'pin'
 
   // --- Hallucination Engine: only active at Creative (1.3) and above ---
   if (mods.hallucinationChance > 0 && ctx.tempValue >= 1.3) {
@@ -152,7 +152,7 @@ export function scorePin(
  */
 export function scoreDetonation(
   pass: Pass,
-  pin: PinDef,
+  pin: NodeDef,
   ctx: ScoringContext,
 ): ScoreEvent | null {
   if (pass.struck.has(pin.id)) return null

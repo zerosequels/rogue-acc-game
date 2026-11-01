@@ -1,14 +1,16 @@
 /**
- * background.ts — the circuit/glyph backdrop.
+ * background.ts — the schematic sheet the network is drawn on.
  *
- * A single full-bleed shader quad behind the board. It does three jobs:
- *   - gives the board somewhere to *be* (a substrate, not a void)
- *   - carries the glyph/circuit motif the theme asks for
- *   - scales its own agitation with temperature, so the backdrop is part of
- *     the escalation rather than a static wallpaper
+ * v1 had a busy procedural circuit field here with drifting glyphs and haze.
+ * Against the v2 wireframe board it was actively harmful: the board is built
+ * from hairlines, and a backdrop made of hairlines competes with it directly.
  *
- * Everything is procedural — no texture loads, no external assets, which keeps
- * the whole game a single self-contained bundle.
+ * So this is now almost nothing — a near-black void with a two-scale blueprint
+ * grid at very low contrast, and occasional registration ticks. It exists to
+ * give the board somewhere to sit and to establish the schematic language.
+ * Everything bright in the scene should be the network.
+ *
+ * Procedural, so the bundle stays self-contained with no texture loads.
  */
 
 import * as THREE from 'three'
@@ -31,57 +33,37 @@ const fragmentShader = /* glsl */ `
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
   }
 
-  // Cheap value noise, enough for a drifting substrate.
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-  }
-
   void main() {
     vec2 world = (vUv - 0.5) * uExtent;
 
-    // --- base gradient: cold at the edges, faintly lit in the middle ---
+    // Near-pure void. The board is the only lit object in the scene; the
+    // substrate exists to give it somewhere to sit, not to compete with it.
     float r = length(world / uExtent * 2.0);
-    vec3 col = mix(vec3(0.019, 0.030, 0.052), vec3(0.006, 0.010, 0.020), r);
+    vec3 col = mix(vec3(0.009, 0.013, 0.024), vec3(0.002, 0.003, 0.008), r);
 
-    // --- circuit lattice: fine grid, brighter where "traces" are active ---
-    vec2 grid = world * 1.5;
-    vec2 g = abs(fract(grid) - 0.5);
-    float lines = smoothstep(0.47, 0.5, max(g.x, g.y));
-    // Activity crawls along rows and columns over time.
-    float activity = noise(vec2(floor(grid.x), floor(grid.y)) * 0.35 + uTime * 0.18);
-    float trace = lines * smoothstep(0.55, 0.95, activity);
-    col += vec3(0.022, 0.085, 0.125) * trace * (0.3 + uHeat * 0.8);
+    // --- blueprint grid: two scales, both hairline --------------------------
+    // A coarse lattice with a finer one inside it reads as a schematic sheet
+    // rather than as graph paper.
+    vec2 fine = abs(fract(world * 0.5) - 0.5) / fwidth(world * 0.5);
+    float fineLine = 1.0 - min(min(fine.x, fine.y), 1.0);
+    col += vec3(0.030, 0.058, 0.082) * fineLine * 0.085;
 
-    // --- coarse layer bands, suggesting depth through the network ---
-    float band = sin(world.y * 0.72 + uTime * 0.12);
-    col += vec3(0.009, 0.022, 0.04) * smoothstep(0.86, 1.0, band);
+    vec2 coarse = abs(fract(world * 0.125) - 0.5) / fwidth(world * 0.125);
+    float coarseLine = 1.0 - min(min(coarse.x, coarse.y), 1.0);
+    col += vec3(0.042, 0.082, 0.115) * coarseLine * 0.16;
 
-    // --- glyph field: blocky pseudo-tokens that flicker in at temperature ---
-    vec2 cell = floor(world * 2.4);
-    float glyphSeed = hash(cell + floor(uTime * 2.2));
-    float glyphOn = step(0.9955 - uHeat * 0.012, glyphSeed);
-    vec2 inCell = fract(world * 2.4);
-    // Draw a crude 3x3 block glyph inside the cell.
-    vec2 q = floor(inCell * 3.0);
-    float bit = step(0.5, hash(cell * 1.7 + q + floor(uTime * 2.2)));
-    float glyph = glyphOn * bit * step(0.08, inCell.x) * step(inCell.x, 0.92)
-                           * step(0.08, inCell.y) * step(inCell.y, 0.92);
-    col += mix(vec3(0.05, 0.19, 0.26), vec3(0.34, 0.08, 0.24), uHeat) * glyph * (0.2 + uHeat * 0.55);
+    // --- registration ticks at coarse intersections -------------------------
+    vec2 cell = floor(world * 0.125);
+    float tick = step(0.93, hash(cell)) * coarseLine;
+    col += vec3(0.05, 0.10, 0.14) * tick * 0.5;
 
-    // --- heat haze: large-scale drifting warmth as temperature rises ---
-    float haze = noise(world * 0.22 + vec2(uTime * 0.07, -uTime * 0.05));
-    col += vec3(0.055, 0.008, 0.038) * haze * uHeat * 0.7;
+    // --- heat: the sheet warms toward magenta under load --------------------
+    col += vec3(0.022, 0.002, 0.015) * uHeat * (0.4 + 0.3 * sin(uTime * 0.5));
 
     gl_FragColor = vec4(col, 1.0);
   }
 `
+
 
 export class Background {
   readonly mesh: THREE.Mesh

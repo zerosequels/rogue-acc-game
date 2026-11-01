@@ -22,7 +22,7 @@
 
 import RAPIER from '@dimforge/rapier2d-compat'
 import { BOARD, ORB, PHYSICS, PIN } from '../config/balance'
-import type { Board, PinDef, PocketDef } from './board'
+import type { Board, NodeDef, PocketDef } from './board'
 
 let ready = false
 
@@ -52,7 +52,7 @@ export interface OrbHandle {
 }
 
 export interface PinHit {
-  pin: PinDef
+  pin: NodeDef
   orb: OrbHandle
   /** World position of the contact, for popups and flashes. */
   x: number
@@ -79,7 +79,7 @@ export class PhysicsWorld {
   private nextOrbId = 1
 
   /** collider handle → pin, for resolving collision events. */
-  private pinByCollider = new Map<number, PinDef>()
+  private pinByCollider = new Map<number, NodeDef>()
   /** pin id → collider, so pruning/detonation can remove them. */
   private colliderByPin = new Map<number, RAPIER.Collider>()
   private orbByCollider = new Map<number, OrbHandle>()
@@ -106,14 +106,14 @@ export class PhysicsWorld {
     this.clear()
     this.board = board
     this.buildWalls(board)
-    for (const pin of board.pins) {
+    for (const pin of board.nodes) {
       if (pin.removed) continue
       this.addPin(pin)
     }
     this.buildPocketWalls(board)
   }
 
-  private addPin(pin: PinDef): void {
+  private addPin(pin: NodeDef): void {
     const desc = RAPIER.ColliderDesc.ball(pin.radius)
       .setTranslation(pin.x, pin.y)
       .setRestitution(PIN.restitution)
@@ -126,7 +126,7 @@ export class PhysicsWorld {
   }
 
   /** Remove a pin from the sim (Prune Dead Neurons, Explosive Weights). */
-  removePin(pin: PinDef): void {
+  removePin(pin: NodeDef): void {
     const collider = this.colliderByPin.get(pin.id)
     if (!collider) return
     this.pinByCollider.delete(collider.handle)
@@ -143,7 +143,7 @@ export class PhysicsWorld {
    * 0.75x once to delete a weight for every remaining pass of the stage is a
    * terrible trade, and it silently degraded the board as the stage went on.
    */
-  restorePin(pin: PinDef): void {
+  restorePin(pin: NodeDef): void {
     if (this.colliderByPin.has(pin.id)) return
     pin.removed = false
     this.addPin(pin)
@@ -352,8 +352,8 @@ export class PhysicsWorld {
   }
 
   /** Pins within `radius` of a point, for Explosive Weights. */
-  pinsNear(x: number, y: number, radius: number, exclude?: PinDef): PinDef[] {
-    const hits: PinDef[] = []
+  pinsNear(x: number, y: number, radius: number, exclude?: NodeDef): NodeDef[] {
+    const hits: NodeDef[] = []
     const r2 = radius * radius
     for (const pin of this.pinByCollider.values()) {
       if (pin.removed || pin === exclude) continue
