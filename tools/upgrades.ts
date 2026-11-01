@@ -20,9 +20,26 @@ import { boardRngFor, fallbackBoard, generateCandidate } from '../src/sim/boardg
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
 import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
+import { resolveCriticalStrike } from '../src/sim/effects'
 import type { Board } from '../src/sim/board'
 
 const BOARDS = Number(process.argv[2] ?? 6)
+
+/**
+ * Upgrades this harness CANNOT measure, and why. They are not traps — the
+ * measurement is a median pass score at Balanced temperature with random aim,
+ * which is structurally blind to each of these. Judge them on `npm run sim`
+ * (economy) or by playing (aim, hot tiers).
+ */
+const UNMEASURABLE: Record<string, string> = {
+  'context-extension': 'buys passes, not pass score',
+  'speculative-decoding': 'buys passes, not pass score',
+  'attention-mask': 'aim aid; bot aims randomly',
+  'benchmark-overfit': 'spike odds; rare events do not move a median',
+  'temperature-spike': 'hot tiers only; measured at Balanced',
+  'hallucination-engine': 'gated at temp >= 1.3; measured at Balanced',
+  'agentic-override': 'manual player action; bot never uses it',
+}
 const PASSES_PER_BOARD = 30
 /** Measure at Balanced: the most activation-efficient tier, so the baseline. */
 const TEMP_INDEX = 1
@@ -49,12 +66,18 @@ function buildBoard(seed: string, stage: number, mods: Mods): Board {
   return fallbackBoard(seed)
 }
 
+const detonated: { removed: boolean }[] = []
+
 function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, charge: number, rng: Rng): number {
   const tier = TEMPERATURES[TEMP_INDEX]!
   const events = makeStepEvents()
   const pass = new Pass()
   const ctx: ScoringContext = { mods, tempScoreMult: tier.scoreMult, tempValue: tier.value, rng }
 
+  // Explosive Weights removes pins during a pass; clear that before rebuilding
+  // so each measured pass starts from the same board the player would see.
+  for (const pin of detonated) pin.removed = false
+  detonated.length = 0
   world.loadBoard(board)
   const speed = LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge
   const count = Math.max(1, Math.min(mods.orbsPerLaunch, LAUNCH.maxOrbsHardCap))
@@ -71,7 +94,16 @@ function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, c
   const maxSteps = Math.ceil((ORB.maxLifetime + 2) / PHYSICS.dt)
   for (let s = 0; s < maxSteps && world.orbCount > 0; s++) {
     world.stepOnce(events)
-    for (const h of events.pinHits) scorePin(pass, h.pin, h.orb, ctx)
+    for (const h of events.pinHits) {
+      const ev = scorePin(pass, h.pin, h.orb, ctx)
+      // Chain Reaction / Explosive Weights now live in the sim layer, so the
+      // harness can finally execute them — they used to read 0% because the
+      // implementation sat in core/game.ts, out of reach.
+      if (ev && h.pin.critical) {
+        const outcome = resolveCriticalStrike(world, pass, h.pin, h.orb, ctx, mods, ORB.restitution * tier.bounce)
+        for (const d of outcome.detonated) detonated.push(d.pin)
+      }
+    }
     for (const l of events.landings) scoreLanding(pass, l.pocket, l.orb, ctx)
   }
   world.despawnAllOrbs()
@@ -119,8 +151,10 @@ async function main(): Promise<void> {
       const score = measure(world, mods, `${up.id}-${stack}`)
       const vsBase = (score / baseline - 1) * 100
       const marginal = (score / prev - 1) * 100
-      const verdict =
-        marginal < 8 ? 'TRAP' : marginal < 22 ? 'weak' : marginal > 70 ? 'STRONG' : 'ok'
+      const note = UNMEASURABLE[up.id]
+      const verdict = note
+        ? `n/a — ${note}`
+        : marginal < 8 ? 'TRAP' : marginal < 22 ? 'weak' : marginal > 70 ? 'STRONG' : 'ok'
       console.log(
         `  ${up.name.padEnd(26)} ${String(stack).padStart(3)}  ${String(score).padStart(6)}  ` +
         `${(vsBase >= 0 ? '+' : '') + vsBase.toFixed(0).padStart(5)}%  ` +

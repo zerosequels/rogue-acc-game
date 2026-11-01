@@ -16,7 +16,8 @@ npm run dev          # http://localhost:5173
 
 | Script | What it does |
 | --- | --- |
-| `npm run dev` | Dev server with HMR |
+| `npm run dev` | Dev server with HMR on http://127.0.0.1:5173 |
+| `npm run dev:lan` | Same, exposed on your local network (test on a phone) |
 | `npm run build` | Typecheck, then production bundle into `dist/` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run sim` | **Headless balance sweep** — see [Tuning](#tuning) |
@@ -38,8 +39,41 @@ the stage's benchmark target before you run out of activations.
 | `SPACE` / click | Charge and fire (auto-fires at full charge) |
 | `1`–`4` | Select sampling temperature |
 | `E` | Agentic Override — redirect a token mid-flight (if unlocked) |
+| `M` | Mute / unmute audio (persists) |
 | `R` | New run |
 | `Enter` / `1`–`3` | Operate any overlay without the mouse |
+
+> **If `localhost:5173` refuses to connect:** Node 17+ binds the IPv6 loopback
+> only, so the server ends up on `[::1]` while the browser resolves `localhost`
+> to `127.0.0.1`. `vite.config.ts` pins `host: '127.0.0.1'` to prevent this.
+
+---
+
+## Audio
+
+Entirely procedural — no asset files, no loading, no licensing. Every sound is
+built from oscillators and filtered noise in `src/audio/sound.ts`.
+
+The voice that matters is `pinTick`, because a pachinko game lives on the tick
+of each weight. **Its pitch climbs a pentatonic scale with chain length**, so a
+long cascade is an ascending run of notes — the audio equivalent of the
+multiplier ladder, and the thing that makes a long cascade *feel* long.
+
+Three constraints shaped it:
+
+- **Autoplay policy.** An `AudioContext` created before a user gesture starts
+  suspended and stays silent forever. It is created lazily on first input and
+  re-resumed on every subsequent gesture, since browsers re-suspend on tab
+  backgrounding.
+- **Density.** A wide cascade can register dozens of strikes a second.
+  `pinTick` is rate-limited to 4 per frame with a 12 ms floor between voices,
+  and every voice disposes itself on `onended`. Without that the mix turns to
+  mud and the main thread spends its budget constructing oscillators.
+- **Escalation.** Temperature brightens the timbre (triangle → square) and
+  detunes it, so Rogue sampling *sounds* unstable.
+
+Mute with `M` or the button bottom-right; the preference persists in
+`localStorage`.
 
 ---
 
@@ -175,10 +209,28 @@ inputs. It found three defects the full-run sweep could not isolate:
 **Prune Dead Neurons** was also strictly negative (−7%: lost strikes outweighed
 the value bump) and is now 15% pruned for +50% value.
 
-Known blind spot: **LoRA: Chain Reaction and Explosive Weights read 0%** in the
-audit because their effects live in `core/game.ts` rather than the sim layer,
-so the headless harness never executes them. Moving those two into `sim/` is
-the top outstanding structural item.
+### The blind spot that was hiding a trap
+
+Chain Reaction and Explosive Weights originally read **exactly 0%** in the
+audit — not because they did nothing, but because their effects lived in
+`core/game.ts`, on the far side of the sim/render split, where the headless
+harness could never execute them. Two of sixteen upgrades were structurally
+unmeasurable.
+
+Both now live in `src/sim/effects.ts`, called by `game.ts` *and* by both
+harnesses. The moment they became measurable, **Explosive Weights turned out to
+be −28%** — a severe trap. It destroyed weights *permanently*, so paying 0.75×
+once deleted a weight for every remaining pass of the stage and silently
+degraded the board as the stage went on. Detonated weights now reform at the
+start of the next pass and pay 2× instead, measuring +22% / +46%.
+
+The lesson is architectural, not numerical: **anything on the wrong side of the
+sim boundary cannot be tested, and what cannot be tested will eventually be
+wrong.**
+
+Upgrades the audit legitimately cannot measure (economy picks, aim aids, hot-tier
+upgrades at a Balanced baseline) are now labelled `n/a` with the reason, rather
+than being mislabelled as traps.
 
 The sim layer imports nothing from Three.js or the DOM, which is what makes the
 harness possible. **Keep it that way.**
@@ -242,6 +294,8 @@ src/
   config/
     balance.ts      ALL gameplay constants. The only tuning surface.
     upgrades.ts     16 upgrades across 4 archetypes, pure data + apply(mods)
+  audio/
+    sound.ts        procedural WebAudio — no assets, rate-limited voices
   core/
     rng.ts          seeded sfc32, derived streams, seed minting
     state.ts        run model + phase machine. Knows no Three.js, no Rapier, no DOM.
@@ -251,6 +305,7 @@ src/
     boardgen.ts     procedural generation, layer patterns, fallback board
     validator.ts    headless playability probing
     physics.ts      Rapier2D wrapper, fixed timestep, velocity clamping
+    effects.ts      upgrade effects that act on the sim (splits, detonations)
     launcher.ts     aim, charge, temperature selection, trajectory preview
     scoring.ts      multiplier ladder, pass accumulation, spike resolution
   render/
@@ -346,3 +401,9 @@ or API calls.
   flavour text says "roughly", and an exact preview would remove the tension
   that makes aiming interesting.
 - Explosive Weights does not chain into further detonations, by design.
+- **No pause.** `R` restarts; there is no way to freeze a run.
+- **Nothing persists between runs** beyond the mute preference — no best score,
+  no run history.
+- **Spike magenta vs drain red is a colourblind hazard.** They should differ by
+  shape or label, not only hue.
+- **Not responsive.** The temperature rail and HUD assume a desktop viewport.

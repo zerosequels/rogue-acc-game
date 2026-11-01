@@ -29,7 +29,6 @@ import {
 } from '../sim/physics'
 import {
   Pass,
-  scoreDetonation,
   scoreLanding,
   scorePin,
   type ScoreEvent,
@@ -38,10 +37,12 @@ import {
 import { fallbackBoard, generateCandidate, boardRngFor } from '../sim/boardgen'
 import { probeBoard } from '../sim/validator'
 import type { Board, PinDef } from '../sim/board'
+import { resolveCriticalStrike } from '../sim/effects'
 import { Renderer } from '../render/scene'
 import { BoardView } from '../render/boardView'
 import { OrbView } from '../render/orbView'
 import { Background } from '../render/background'
+import { Audio } from '../audio/sound'
 import { Hud } from '../ui/hud'
 import { Overlays } from '../ui/overlays'
 import type { Upgrade } from '../config/upgrades'
@@ -61,6 +62,7 @@ export class Game {
   private background: Background
   private hud = new Hud()
   private overlays = new Overlays()
+  private audio = new Audio()
 
   private run!: RunState
   private launcher = new Launcher()
@@ -78,6 +80,8 @@ export class Game {
    * dead weight that dropped straight through the board without bouncing.
    */
   private passRestitution = 0
+  /** Weights detonated during the current pass, restored when the next begins. */
+  private detonatedThisPass: PinDef[] = []
   /** Smoothed heat, so the backdrop eases rather than snaps. */
   private displayHeat = 0
 
@@ -112,8 +116,19 @@ export class Game {
     this.physics = new PhysicsWorld()
     this.installInput()
     this.hud.bindTempSelect((i) => {
-      if (this.launcher.selectTemp(i, this.run.mods)) this.syncHud()
+      this.audio.unlock()
+      if (this.launcher.selectTemp(i, this.run.mods)) {
+        this.audio.uiMove()
+        this.syncHud()
+      } else {
+        this.audio.uiDenied()
+      }
     })
+    this.hud.bindMuteToggle(() => {
+      const muted = this.audio.toggleMute()
+      this.hud.setMuted(muted)
+    })
+    this.hud.setMuted(this.audio.muted)
     this.startRun(seed)
     this.loop()
   }
@@ -138,6 +153,7 @@ export class Game {
     this.physics.despawnAllOrbs()
     this.orbView.releaseAll()
     this.pass.reset()
+    this.detonatedThisPass.length = 0
 
     const board = this.buildValidatedBoard()
     this.board = board
@@ -190,6 +206,8 @@ export class Game {
   }
 
   private beginPlay(): void {
+    this.audio.unlock()
+    this.audio.uiConfirm()
     this.overlays.close()
     this.run.phase = 'aim'
     this.launcher.enabled = true
@@ -208,9 +226,11 @@ export class Game {
     if (!this.run.canAfford(cost)) {
       this.launcher.cancelCharge()
       this.hud.flash('INSUFFICIENT ACTIVATIONS', 'var(--red)')
+      this.audio.uiDenied()
       return
     }
 
+    const charge = this.launcher.charge
     const spec = this.launcher.release(this.run.mods)
     if (!spec) return
 
@@ -219,6 +239,7 @@ export class Game {
     // A new forward pass: clear the struck markers so the cascade path reads
     // fresh, and reset the uncommitted score.
     this.pass.reset()
+    this.restoreDetonated()
     if (this.board) this.boardView.resetPass(this.board)
 
     this.passHeat = heatOf(spec.tier.value)
@@ -235,9 +256,21 @@ export class Game {
       this.orbView.acquire(orb)
     }
 
+    this.audio.launch(charge, this.passHeat)
+
     this.run.phase = 'resolving'
     this.launcher.enabled = false
     this.syncHud()
+  }
+
+  /** Explosive Weights only damages the board for the duration of one pass. */
+  private restoreDetonated(): void {
+    if (this.detonatedThisPass.length === 0) return
+    for (const pin of this.detonatedThisPass) {
+      this.physics.restorePin(pin)
+      if (this.board) this.boardView.revive(pin, this.board)
+    }
+    this.detonatedThisPass.length = 0
   }
 
   /** Agentic Override: redirect the highest in-flight token toward the aim line. */
@@ -253,6 +286,7 @@ export class Game {
     this.physics.redirectOrb(target, this.launcher.angle, 1.15)
     this.run.overridesLeft--
     this.renderer.punch(0.5)
+    this.audio.uiConfirm()
     this.hud.flash('AGENTIC OVERRIDE', 'var(--magenta)')
     this.syncHud()
   }
@@ -290,10 +324,12 @@ export class Game {
       if (hit.pin.critical) this.run.totals.criticalsStruck++
       if (ev.kind === 'hallucination' || ev.kind === 'critical') this.renderer.punch(0.22)
 
-      if (hit.pin.critical) {
-        this.detonate(hit.pin, ctx)
-        this.splitOrb(hit.orb)
-      }
+      // Pitch climbs with the chain, so a long cascade is an ascending run.
+      if (ev.kind === 'hallucination') this.audio.hallucination()
+      else if (hit.pin.critical) this.audio.criticalTick(this.pass.chain, this.passHeat)
+      else this.audio.pinTick(this.pass.chain, this.passHeat)
+
+      if (hit.pin.critical) this.resolveCritical(hit.pin, hit.orb, ctx)
     }
 
     // --- pocket landings ---
@@ -304,8 +340,12 @@ export class Game {
       if (landing.pocket.kind === 'spike') {
         this.run.totals.spikesHit++
         this.renderer.punch(1.3)
+        this.audio.spike()
       } else if (landing.pocket.kind === 'drain') {
         this.run.totals.drains++
+        this.audio.drain()
+      } else {
+        this.audio.pocket()
       }
       if (ev) this.emitPopup(ev)
       else if (landing.pocket.kind === 'drain') this.hud.flash('DEAD NEURON', 'var(--red)')
@@ -318,42 +358,37 @@ export class Game {
     }
   }
 
-  /** Explosive Weights: detonate neighbours of a struck attention head. */
-  private detonate(pin: PinDef, ctx: ScoringContext): void {
-    if (!this.run.mods.explosiveWeights) return
-    const near = this.physics.pinsNear(pin.x, pin.y, this.run.mods.explosiveRadius)
-    let destroyed = 0
-    for (const victim of near) {
-      if (victim.critical) continue // heads survive; only ordinary weights blow
-      if (destroyed >= 3) break
-      const ev = scoreDetonation(this.pass, victim, ctx)
+  /**
+   * Attention-head side effects. The mechanics live in `sim/effects.ts` so the
+   * headless harness can execute them too; this only turns the outcome into
+   * visuals and sound.
+   */
+  private resolveCritical(pin: PinDef, orb: OrbHandle, ctx: ScoringContext): void {
+    const outcome = resolveCriticalStrike(
+      this.physics,
+      this.pass,
+      pin,
+      orb,
+      ctx,
+      this.run.mods,
+      this.passRestitution,
+    )
+
+    for (const { pin: victim, event } of outcome.detonated) {
       this.boardView.retire(victim)
-      this.physics.removePin(victim)
-      destroyed++
-      if (ev) this.emitPopup(ev)
+      this.detonatedThisPass.push(victim)
+      if (event) this.emitPopup(event)
     }
-    if (destroyed > 0) this.renderer.punch(0.6)
-  }
+    if (outcome.detonated.length > 0) {
+      this.renderer.punch(0.6)
+      this.audio.detonate()
+    }
 
-  /** LoRA: Chain Reaction — split on an attention head, respecting the cap. */
-  private splitOrb(orb: OrbHandle): void {
-    if (!this.run.mods.chainSplitOnCritical) return
-    const cap = Math.min(this.run.mods.maxOrbs, LAUNCH.maxOrbsHardCap)
-    if (this.physics.orbCount >= cap) return
-
-    // Mirror the parent's horizontal velocity, with a nudge away from it, so
-    // the pair visibly diverges instead of overlapping into one blurred dot.
-    const vx = -orb.vx * 0.9 + (orb.vx >= 0 ? -2 : 2)
-    const vy = Math.min(-2, orb.vy * 0.8)
-
-    const child = this.physics.spawnOrb(orb.x, orb.y, vx, vy, {
-      restitution: this.passRestitution,
-      launchId: orb.launchId,
-      // Splits pay less, or Chain Reaction stacked with multi-orb runs away.
-      scoreScale: orb.scoreScale * 0.6,
-    })
-    this.orbView.acquire(child)
-    this.renderer.punch(0.35)
+    if (outcome.split) {
+      this.orbView.acquire(outcome.split)
+      this.renderer.punch(0.35)
+      this.audio.split()
+    }
   }
 
   private emitPopup(ev: ScoreEvent): void {
@@ -376,6 +411,7 @@ export class Game {
 
     if (next === 'stage-clear') {
       this.run.phase = 'stage-clear'
+      this.audio.stageClear()
       const rewards = this.run.applyStageRewards()
       this.syncHud()
       this.overlays.stageClear(this.run, rewards, () => this.showUpgrades())
@@ -384,6 +420,8 @@ export class Game {
 
     // run-win / run-fail
     this.run.phase = next
+    if (next === 'run-win') this.audio.stageClear()
+    else this.audio.runFail()
     this.overlays.runEnd(
       this.run,
       next === 'run-win',
@@ -403,6 +441,8 @@ export class Game {
   }
 
   private pickUpgrade(upgrade: Upgrade): void {
+    this.audio.unlock()
+    this.audio.uiConfirm()
     this.run.takeUpgrade(upgrade)
     this.launcher.normaliseSelection(this.run.mods)
     this.hud.invalidate()
@@ -423,6 +463,7 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.1)
     const t = this.clock.elapsedTime
 
+    this.audio.frame()
     const playing = this.run.phase === 'aim' || this.run.phase === 'resolving'
 
     // --- input-driven aim + charge ---
@@ -459,7 +500,7 @@ export class Game {
     )
 
     if (playing) this.syncHud()
-    this.renderer.render()
+    this.renderer.render(dt)
   }
 
   private syncHud(): void {
@@ -488,6 +529,18 @@ export class Game {
 
   private installInput(): void {
     window.addEventListener('keydown', (e) => {
+      // Any keypress is a user gesture, which is what an AudioContext needs
+      // before it will produce sound. Browsers can also re-suspend a context
+      // when the tab is backgrounded, so this runs on every key, not once.
+      this.audio.unlock()
+
+      if (e.key === 'm' || e.key === 'M') {
+        const muted = this.audio.toggleMute()
+        this.hud.setMuted(muted)
+        this.hud.flash(muted ? 'AUDIO MUTED' : 'AUDIO ON', 'var(--dim)')
+        return
+      }
+
       // Overlays own the keyboard while they are up.
       if (this.overlays.isOpen) {
         if (e.key === 'r' || e.key === 'R') this.startRun(mintSeed())
@@ -509,15 +562,23 @@ export class Game {
           break
         case ' ':
           e.preventDefault()
-          if (this.run.phase === 'aim' && !this.launcher.charging) this.launcher.beginCharge()
+          if (this.run.phase === 'aim' && !this.launcher.charging) {
+            this.launcher.beginCharge()
+            this.audio.chargeStart()
+          }
           break
         case '1':
         case '2':
         case '3':
         case '4': {
           const idx = Number(e.key) - 1
-          if (this.launcher.selectTemp(idx, this.run.mods)) this.syncHud()
-          else this.hud.flash('SAMPLING TIER LOCKED', 'var(--dim)')
+          if (this.launcher.selectTemp(idx, this.run.mods)) {
+            this.audio.uiMove()
+            this.syncHud()
+          } else {
+            this.audio.uiDenied()
+            this.hud.flash('SAMPLING TIER LOCKED', 'var(--dim)')
+          }
           break
         }
         case 'e':
@@ -558,11 +619,13 @@ export class Game {
     })
 
     canvas.addEventListener('pointerdown', (e) => {
+      this.audio.unlock()
       if (this.run.phase !== 'aim') return
       e.preventDefault()
       const w = this.renderer.screenToWorld(e.clientX, e.clientY)
       this.launcher.aimAt(w.x, w.y)
       this.launcher.beginCharge()
+      this.audio.chargeStart()
     })
 
     canvas.addEventListener('pointerup', (e) => {

@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "sim": "tsx tools/simulate.ts",
     "smoke": "vite build && node tools/smoke.mjs",
-    "upgrades": "tsx tools/upgrades.ts"
+    "upgrades": "tsx tools/upgrades.ts",
+    "dev:lan": "vite --host 0.0.0.0"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",

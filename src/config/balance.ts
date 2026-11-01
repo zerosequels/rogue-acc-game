@@ -130,6 +130,17 @@ export const SCORE = {
   pocketBonus: 15,
   /** Hallucination Engine payout multiplier on a successful roll. */
   hallucinationMult: 5,
+  /**
+   * Explosive Weights: payout per detonated weight, as a multiple of base
+   * value, and how many a single head may destroy.
+   *
+   * Detonation has to pay ABOVE base, not below. A destroyed weight cannot
+   * then be struck by the token that detonated it, so a sub-1.0 payout makes
+   * the upgrade a net loss — the audit measured the original 0.75x at +4%
+   * against a +40% budget even after the permanent-destruction bug was fixed.
+   */
+  detonationValueMult: 2.0,
+  detonationCap: 4,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -272,6 +283,12 @@ export const VISUAL = {
   cameraPadTop: 2.8,
   /** Clearance below the board floor, so the pockets are never clipped. */
   cameraPadBottom: 2.6,
+  /** Peak camera shake, in world units. Past ~0.5 it reads as nausea, not impact. */
+  shakeMax: 0.34,
+  /** World units of shake added per unit of renderer.punch(). */
+  shakePerPunch: 0.16,
+  /** Per-frame shake decay, normalised to 60fps. */
+  shakeDecay: 0.86,
 } as const
 
 export const COLORS = {

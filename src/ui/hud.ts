@@ -51,6 +51,7 @@ export class Hud {
   private launchVal = el('launch-val')
   private popups = el('popups')
   private seedTxt = el('seed-txt')
+  private muteBtn = el('mute-btn')
   private hintEl = el('help-hint')
 
   /** Cached last-written values, so sync() does not thrash the DOM. */
@@ -77,6 +78,15 @@ export class Hud {
 
   setSeed(seed: string): void {
     this.seedTxt.textContent = seed
+  }
+
+  bindMuteToggle(fn: () => void): void {
+    this.muteBtn.addEventListener('click', fn)
+  }
+
+  setMuted(muted: boolean): void {
+    this.muteBtn.textContent = muted ? '♪ off' : '♪ on'
+    this.muteBtn.classList.toggle('off', muted)
   }
 
   /** Build or rebuild the temperature rail. Cheap guard avoids churn. */
@@ -227,6 +237,7 @@ export class Hud {
     if (mods.agenticOverridesPerStage > 0) {
       parts.push(`<kbd>E</kbd>  agentic override (${overridesLeft} left)`)
     }
+    parts.push('<kbd>M</kbd>  mute')
     parts.push('<kbd>R</kbd>  new run')
     const html = parts.join(' &nbsp;·&nbsp; ')
     if (html !== this.lastHint) {

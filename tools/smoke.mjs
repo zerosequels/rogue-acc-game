@@ -123,6 +123,28 @@ await page.mouse.up()
 await page.waitForTimeout(600)
 console.log('✓ pointer input accepted')
 
+// Audio: the context must exist and be running after real user gestures.
+// A silently-suspended AudioContext is the classic autoplay-policy failure.
+const audio = await page.evaluate(() => {
+  const a = window.game?.['audio']
+  return { present: !!a, state: a?.['ctx']?.state ?? null, muted: a?.muted ?? null }
+})
+if (!audio.present) throw new Error('audio module missing')
+if (audio.state !== 'running') throw new Error('AudioContext not running: ' + audio.state)
+console.log(`✓ audio live (context ${audio.state}, muted=${audio.muted})`)
+
+// Screen shake must actually displace the frustum, not just the shader.
+const shook = await page.evaluate(() => {
+  const r = window.game?.['renderer']
+  const before = r.camera.top
+  r.punch(1.5)
+  r.render(1 / 60)
+  const after = r.camera.top
+  return { before, after, moved: Math.abs(after - before) }
+})
+if (shook.moved < 0.001) throw new Error('punch() did not move the camera: ' + JSON.stringify(shook))
+console.log(`✓ screen shake displaces camera (${shook.moved.toFixed(3)} world units)`)
+
 // ---------------------------------------------------------------------------
 // Full-run drive: the overlay -> upgrade -> next-stage path is the part the
 // headless sim cannot cover, because it lives entirely in DOM and orchestration.

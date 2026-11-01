@@ -119,13 +119,25 @@ export class Renderer {
   private resizeListeners: (() => void)[] = []
   /** Transient kick on big score events, decays each frame. */
   private shock = 0
+  /** Positional screen shake, in world units. Decays each frame. */
+  private shake = 0
+  /** Deterministic-ish shake phase; cosmetic only, never gameplay. */
+  private shakePhase = 0
+  /** Base frustum for the current viewport, before shake is applied. */
+  private frustum = { left: -1, right: 1, top: 1, bottom: -1 }
 
   constructor(private host: HTMLElement) {
     this.scene.background = new THREE.Color(COLORS.bg)
 
+    // Camera sits at the origin and the frustum carries absolute world
+    // coordinates. Do NOT also offset position.y to VIEW_CY: an orthographic
+    // frustum is relative to the camera, so doing both double-counts the
+    // offset -- the scene rendered a world unit high and worldToScreen (which
+    // reads camera.top as an absolute coord) disagreed with the render, so
+    // score popups appeared ~37px away from the weight that produced them.
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100)
-    this.camera.position.set(0, VIEW_CY, 20)
-    this.camera.lookAt(0, VIEW_CY, 0)
+    this.camera.position.set(0, 0, 20)
+    this.camera.lookAt(0, 0, 0)
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -171,11 +183,11 @@ export class Renderer {
       viewH = viewW / aspect
     }
 
-    this.camera.left = -viewW / 2
-    this.camera.right = viewW / 2
-    this.camera.top = VIEW_CY + viewH / 2
-    this.camera.bottom = VIEW_CY - viewH / 2
-    this.camera.updateProjectionMatrix()
+    this.frustum.left = -viewW / 2
+    this.frustum.right = viewW / 2
+    this.frustum.top = VIEW_CY + viewH / 2
+    this.frustum.bottom = VIEW_CY - viewH / 2
+    this.applyFrustum(0, 0)
 
     this.renderer.setSize(w, h)
     this.composer.setSize(w, h)
@@ -220,14 +232,47 @@ export class Renderer {
     return { x, y }
   }
 
-  /** Kick the glitch briefly — used for spikes and detonations. */
+  /**
+   * Kick the presentation. Drives BOTH the glitch shader and a positional
+   * camera shake — the shader alone reads as a video artefact rather than as
+   * impact, and impact is the point.
+   */
   punch(amount = 1): void {
     this.shock = Math.min(1.6, this.shock + amount)
+    this.shake = Math.min(VISUAL.shakeMax, this.shake + amount * VISUAL.shakePerPunch)
   }
 
-  render(): void {
+  /**
+   * Offset the FRUSTUM rather than the camera position, so that worldToScreen
+   * — which reads the frustum — stays correct while shaking and DOM popups
+   * track the weights they came from.
+   */
+  private applyFrustum(dx: number, dy: number): void {
+    this.camera.left = this.frustum.left + dx
+    this.camera.right = this.frustum.right + dx
+    this.camera.top = this.frustum.top + dy
+    this.camera.bottom = this.frustum.bottom + dy
+    this.camera.updateProjectionMatrix()
+  }
+
+  render(dt = 1 / 60): void {
     const t = this.clock.getElapsedTime()
     this.shock *= 0.9
+
+    // Two detuned sinusoids rather than random jitter: random shake reads as
+    // noise, a beat frequency reads as a physical knock settling down.
+    if (this.shake > 0.0004) {
+      this.shakePhase += dt
+      const decay = Math.pow(VISUAL.shakeDecay, dt * 60)
+      this.shake *= decay
+      const a = this.shake
+      const dx = Math.sin(this.shakePhase * 61.3) * a
+      const dy = Math.cos(this.shakePhase * 47.9) * a * 0.75
+      this.applyFrustum(dx, dy)
+    } else if (this.shake !== 0) {
+      this.shake = 0
+      this.applyFrustum(0, 0)
+    }
 
     const k = Math.min(1, this.heat + this.shock * 0.55)
     this.glitch.uniforms.uIntensity!.value = k * VISUAL.glitchMax + this.shock * 0.18

@@ -213,6 +213,7 @@
         font-family: var(--mono); font-size: 9px; padding: 3px 7px; cursor: pointer;
       }
       #seed-bar button:hover { color: var(--cyan); border-color: var(--cyan); }
+      #mute-btn.off { color: var(--red); border-color: #3a2030; }
 
       #help-hint {
         position: absolute; bottom: 10px; left: 18px; max-width: 330px;
@@ -287,10 +288,11 @@
 
       <div id="help-hint">
         <kbd>◄ ►</kbd> / mouse &nbsp;aim &nbsp;·&nbsp; <kbd>SPACE</kbd> / click &nbsp;charge + fire<br />
-        <kbd>1</kbd>–<kbd>4</kbd> &nbsp;temperature &nbsp;·&nbsp; <kbd>E</kbd> &nbsp;agentic override &nbsp;·&nbsp; <kbd>R</kbd> &nbsp;new run
+        <kbd>1</kbd>–<kbd>4</kbd> &nbsp;temperature &nbsp;·&nbsp; <kbd>E</kbd> &nbsp;agentic override &nbsp;·&nbsp; <kbd>M</kbd> &nbsp;mute &nbsp;·&nbsp; <kbd>R</kbd> &nbsp;new run
       </div>
 
       <div id="seed-bar">
+        <button id="mute-btn" title="Toggle audio (M)">♪ on</button>
         <span>seed <code id="seed-txt">—</code></span>
         <button id="seed-copy">copy link</button>
         <button id="seed-new">reroll</button>

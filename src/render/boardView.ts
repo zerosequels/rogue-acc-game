@@ -35,6 +35,8 @@ export class BoardView {
   private normalMesh: THREE.InstancedMesh | null = null
   private criticalMesh: THREE.InstancedMesh | null = null
   private visuals = new Map<number, PinVisual>()
+  /** Slots of pins retired mid-pass, so `revive` can restore them. */
+  private retiredSlots = new Map<number, number>()
   private disposables: (THREE.BufferGeometry | THREE.Material)[] = []
 
   constructor() {
@@ -236,7 +238,28 @@ export class BoardView {
     DUMMY.updateMatrix()
     mesh.setMatrixAt(v.slot, DUMMY.matrix)
     mesh.instanceMatrix.needsUpdate = true
+    this.retiredSlots.set(pin.id, v.slot)
     this.visuals.delete(pin.id)
+  }
+
+  /** Put a detonated weight's instance back where it belongs. */
+  revive(pin: PinDef, board: Board): void {
+    if (this.visuals.has(pin.id)) return
+    const critical = pin.critical
+    const mesh = critical ? this.criticalMesh : this.normalMesh
+    if (!mesh) return
+    const slot = this.retiredSlots.get(pin.id)
+    if (slot === undefined) return
+    DUMMY.position.set(pin.x, pin.y, critical ? 0.02 : 0)
+    DUMMY.rotation.z = critical ? Math.PI / 6 : 0
+    DUMMY.scale.setScalar(1)
+    DUMMY.updateMatrix()
+    mesh.setMatrixAt(slot, DUMMY.matrix)
+    mesh.instanceMatrix.needsUpdate = true
+    this.visuals.set(pin.id, { pin, slot, critical, flash: 0, spent: false })
+    this.writeColor(this.visuals.get(pin.id)!, board)
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    this.retiredSlots.delete(pin.id)
   }
 
   /** Clear the struck/spent marking at the start of a new pass. */
@@ -299,5 +322,6 @@ export class BoardView {
     this.normalMesh = null
     this.criticalMesh = null
     this.visuals.clear()
+    this.retiredSlots.clear()
   }
 }

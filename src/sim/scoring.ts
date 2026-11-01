@@ -163,7 +163,8 @@ export function scoreDetonation(
   const surge = mods.gradientSurge * (pass.struck.size - 1)
   const base = SCORE.basePinValue + surge
   const points = Math.round(
-    base * mods.pinValueMult * tierMult * ctx.tempScoreMult * mods.scoreMult * 0.75,
+    base * mods.pinValueMult * tierMult * ctx.tempScoreMult * mods.scoreMult *
+      SCORE.detonationValueMult,
   )
 
   pass.score += points

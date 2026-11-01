@@ -19,6 +19,8 @@
  * trivialises. See the coupling note in `balance.ts`.
  */
 
+import { SCORE } from './balance'
+
 export type Archetype = 'scale' | 'width' | 'precision' | 'temperature'
 
 /**
@@ -56,6 +58,8 @@ export interface Mods {
   /** Critical pins destroy nearby pins, each scoring on destruction. */
   explosiveWeights: boolean
   explosiveRadius: number
+  /** Weights a single head may detonate. */
+  detonationCap: number
   spikeMult: number
   spikeWidthMult: number
 
@@ -89,6 +93,7 @@ export function baseMods(poolMax: number): Mods {
     pruneFraction: 0,
     explosiveWeights: false,
     explosiveRadius: 1.9,
+    detonationCap: SCORE.detonationCap,
     spikeMult: 5,
     spikeWidthMult: 1,
     showTrajectory: false,
@@ -254,11 +259,17 @@ export const UPGRADES: readonly Upgrade[] = [
     id: 'explosive-weights',
     name: 'Explosive Weights',
     archetype: 'precision',
-    description: 'Attention heads detonate, destroying nearby weights — each scores on destruction.',
+    description: 'Attention heads detonate, scoring nearby weights at double value. They reform next pass.',
     flavor: 'exploding gradients, but on purpose, and louder.',
     maxStacks: 2,
     weight: 6,
-    apply: (m) => { m.explosiveWeights = true; m.explosiveRadius += 0.5 },
+    // Stack 2 must raise the CAP, not just the radius — a wider blast that
+    // still only destroys four weights measured at +7%, barely a pick.
+    apply: (m) => {
+      m.explosiveWeights = true
+      m.explosiveRadius += 0.6
+      m.detonationCap += 3
+    },
   },
   {
     id: 'benchmark-overfit',

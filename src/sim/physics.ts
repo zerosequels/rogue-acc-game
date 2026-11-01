@@ -135,6 +135,20 @@ export class PhysicsWorld {
     pin.removed = true
   }
 
+  /**
+   * Put a detonated pin back. Explosive Weights destroys weights DURING a
+   * pass only — the board is rebuilt between passes.
+   *
+   * Permanent destruction was measured at -28% in `tools/upgrades.ts`: paying
+   * 0.75x once to delete a weight for every remaining pass of the stage is a
+   * terrible trade, and it silently degraded the board as the stage went on.
+   */
+  restorePin(pin: PinDef): void {
+    if (this.colliderByPin.has(pin.id)) return
+    pin.removed = false
+    this.addPin(pin)
+  }
+
   private buildWalls(board: Board): void {
     const t = BOARD.wallThickness
     const halfW = BOARD.width / 2

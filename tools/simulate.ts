@@ -21,6 +21,7 @@ import { boardRngFor, fallbackBoard, generateCandidate } from '../src/sim/boardg
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
 import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
+import { resolveCriticalStrike } from '../src/sim/effects'
 import type { Board } from '../src/sim/board'
 
 const SEEDS = Number(process.argv[2] ?? 24)
@@ -54,6 +55,8 @@ function buildBoard(seed: string, stage: number, mods: Mods): { board: Board; at
  * Simulate one forward pass with a given aim/charge/temperature and return the
  * score it produced plus the cascade length. Uses the real scoring path.
  */
+const detonated: { removed: boolean }[] = []
+
 function simulatePass(
   world: PhysicsWorld,
   board: Board,
@@ -73,6 +76,10 @@ function simulatePass(
     rng,
   }
 
+  // Explosive Weights removes pins during a pass; clear that before rebuilding
+  // so each measured pass starts from the same board the player would see.
+  for (const pin of detonated) pin.removed = false
+  detonated.length = 0
   world.loadBoard(board)
 
   const speed = LAUNCH.minSpeed + (LAUNCH.maxSpeed - LAUNCH.minSpeed) * charge
@@ -95,7 +102,13 @@ function simulatePass(
 
   for (let step = 0; step < maxSteps && world.orbCount > 0; step++) {
     world.stepOnce(events)
-    for (const hit of events.pinHits) scorePin(pass, hit.pin, hit.orb, ctx)
+    for (const hit of events.pinHits) {
+      const ev = scorePin(pass, hit.pin, hit.orb, ctx)
+      if (ev && hit.pin.critical) {
+        const outcome = resolveCriticalStrike(world, pass, hit.pin, hit.orb, ctx, mods, ORB.restitution * tier.bounce)
+        for (const d of outcome.detonated) detonated.push(d.pin)
+      }
+    }
     for (const landing of events.landings) {
       scoreLanding(pass, landing.pocket, landing.orb, ctx)
       if (landing.pocket.kind === 'spike') spike = true
