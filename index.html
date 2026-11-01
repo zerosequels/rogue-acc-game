@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>rogue/acc</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bg: #04060b;
+        --panel: rgba(8, 14, 26, 0.82);
+        --line: #16243d;
+        --fg: #c8d6ee;
+        --dim: #5a6e92;
+        --cyan: #35e4ff;
+        --magenta: #ff3cc8;
+        --amber: #ffb340;
+        --lime: #9dff4a;
+        --red: #ff4d5e;
+        --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; height: 100%; overflow: hidden;
+        background: var(--bg); color: var(--fg);
+        font-family: var(--mono); font-size: 14px;
+        -webkit-font-smoothing: antialiased;
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+
+      /* ---------- shared chrome ---------- */
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        backdrop-filter: blur(6px);
+      }
+      .label { color: var(--dim); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+      .mono-num { font-variant-numeric: tabular-nums; font-weight: 800; }
+
+      /* ---------- HUD ---------- */
+      #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+      #hud-top {
+        position: absolute; top: 0; left: 0; right: 0;
+        display: flex; align-items: stretch; gap: 1px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .hud-cell { padding: 8px 14px; min-width: 0; }
+      .hud-cell + .hud-cell { border-left: 1px solid var(--line); }
+      .hud-cell .val { font-size: 19px; line-height: 1.15; }
+      #hud-spacer { flex: 1; border-left: 1px solid var(--line); }
+
+      #cell-bench { flex: 0 0 auto; min-width: 290px; }
+      #bench-bar {
+        position: relative; height: 7px; margin-top: 7px;
+        background: #0b1424; border: 1px solid var(--line); overflow: hidden;
+      }
+      #bench-fill {
+        position: absolute; inset: 0 100% 0 0;
+        background: linear-gradient(90deg, var(--cyan), var(--lime));
+        transition: right .22s cubic-bezier(.2,.8,.2,1);
+      }
+      #bench-bar.met #bench-fill { background: linear-gradient(90deg, var(--lime), var(--amber)); }
+      #bench-name { color: var(--cyan); font-size: 10px; letter-spacing: .1em; margin-top: 5px; }
+
+      .act-pips { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; max-width: 230px; }
+      .pip { width: 6px; height: 11px; background: var(--cyan); opacity: .9; }
+      .pip.spent { background: #1d2a40; }
+      #cell-act.low .val { color: var(--red); }
+      #cell-act.low .pip:not(.spent) { background: var(--red); }
+
+      /* ---------- temperature selector ---------- */
+      #temp-rail {
+        position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
+        display: flex; flex-direction: column; gap: 7px;
+        pointer-events: auto; z-index: 11;
+      }
+      .temp-opt {
+        display: grid; grid-template-columns: 22px 1fr; align-items: center; gap: 9px;
+        padding: 7px 12px 7px 8px; width: 215px;
+        background: var(--panel); border: 1px solid var(--line);
+        cursor: pointer; transition: border-color .12s, transform .12s, background .12s;
+      }
+      .temp-opt:hover { border-color: #2b4160; }
+      .temp-opt .key {
+        text-align: center; font-weight: 800; font-size: 12px;
+        color: var(--dim); border: 1px solid var(--line); padding: 1px 0;
+      }
+      .temp-opt .tname { font-size: 12px; font-weight: 600; }
+      .temp-opt .tmeta { font-size: 10px; color: var(--dim); margin-top: 2px; }
+      .temp-opt.sel { transform: translateX(7px); background: rgba(16, 30, 52, .95); }
+      .temp-opt.sel .key { color: var(--bg); }
+      .temp-opt.locked { opacity: .36; cursor: not-allowed; }
+      .temp-opt.unaffordable .tmeta { color: var(--red); }
+      .temp-opt[data-tier="0"].sel { border-color: var(--cyan); }
+      .temp-opt[data-tier="0"].sel .key { background: var(--cyan); }
+      .temp-opt[data-tier="1"].sel { border-color: var(--lime); }
+      .temp-opt[data-tier="1"].sel .key { background: var(--lime); }
+      .temp-opt[data-tier="2"].sel { border-color: var(--amber); }
+      .temp-opt[data-tier="2"].sel .key { background: var(--amber); }
+      .temp-opt[data-tier="3"].sel { border-color: var(--magenta); }
+      .temp-opt[data-tier="3"].sel .key { background: var(--magenta); }
+
+      /* ---------- launch readout ---------- */
+      .hud-cell.readout { min-width: 96px; text-align: right; }
+      #chain-val { color: var(--amber); }
+      #mult-val { color: var(--magenta); }
+
+      #charge-wrap {
+        position: absolute; bottom: 0; left: 0; right: 0;
+        height: 4px; background: #0b1424; overflow: hidden;
+        opacity: 0; transition: opacity .1s;
+      }
+      #charge-wrap.on { opacity: 1; }
+      #charge-fill {
+        position: absolute; inset: 0 100% 0 0;
+        background: linear-gradient(90deg, var(--cyan), var(--amber), var(--magenta));
+      }
+
+      /* ---------- floating score popups ---------- */
+      #popups { position: absolute; inset: 0; overflow: hidden; }
+      .popup {
+        position: absolute; font-size: 13px; font-weight: 800;
+        text-shadow: 0 0 10px currentColor; white-space: nowrap;
+        animation: floatUp 900ms cubic-bezier(.17,.84,.44,1) forwards;
+      }
+      .popup.crit { font-size: 17px; }
+      @keyframes floatUp {
+        0%   { opacity: 0; transform: translate(-50%, 0) scale(.72); }
+        18%  { opacity: 1; transform: translate(-50%, -8px) scale(1.12); }
+        100% { opacity: 0; transform: translate(-50%, -52px) scale(.94); }
+      }
+
+      /* ---------- overlays ---------- */
+      #overlay {
+        position: fixed; inset: 0; z-index: 30;
+        display: none; align-items: center; justify-content: center;
+        background: rgba(2, 4, 9, .86); backdrop-filter: blur(3px);
+      }
+      #overlay.on { display: flex; }
+      .sheet { width: min(940px, 94vw); max-height: 92vh; overflow-y: auto; padding: 30px 34px; }
+      .sheet h1 { margin: 0 0 4px; font-size: 27px; letter-spacing: -.02em; font-weight: 800; }
+      .sheet h2 { margin: 0 0 18px; font-size: 12px; font-weight: 400; color: var(--dim); letter-spacing: .1em; }
+      .flavor {
+        margin: 16px 0 22px; padding: 13px 16px;
+        border-left: 2px solid var(--cyan); background: rgba(53, 228, 255, .05);
+        color: #9fb6d8; font-size: 12.5px; line-height: 1.65;
+      }
+      .ok { color: var(--lime); } .bad { color: var(--red); }
+      .cyan { color: var(--cyan); } .mag { color: var(--magenta); } .amb { color: var(--amber); }
+
+      .stat-grid {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+        gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 22px;
+      }
+      .stat { background: #070d18; padding: 11px 14px; }
+      .stat .val { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+      /* ---------- upgrade cards ---------- */
+      #cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin-top: 4px; }
+      .card {
+        padding: 16px; cursor: pointer; text-align: left;
+        background: #070d18; border: 1px solid var(--line);
+        transition: transform .14s cubic-bezier(.2,.8,.2,1), border-color .14s, background .14s;
+        display: flex; flex-direction: column; min-height: 196px;
+      }
+      .card:hover, .card.kb {
+        transform: translateY(-5px); background: #0b1526;
+        border-color: var(--pick, var(--cyan));
+      }
+      .card .arch {
+        font-size: 9px; letter-spacing: .16em; text-transform: uppercase;
+        color: var(--pick, var(--cyan)); margin-bottom: 9px; font-weight: 600;
+      }
+      .card .cname { font-size: 16px; font-weight: 800; margin-bottom: 9px; line-height: 1.25; }
+      .card .cdesc { font-size: 12px; color: #91a6c6; line-height: 1.6; flex: 1; }
+      .card .ckey {
+        margin-top: 13px; font-size: 10px; color: var(--dim);
+        border-top: 1px solid var(--line); padding-top: 9px;
+      }
+      .card[data-arch="scale"]       { --pick: var(--cyan); }
+      .card[data-arch="width"]       { --pick: var(--lime); }
+      .card[data-arch="precision"]   { --pick: var(--amber); }
+      .card[data-arch="temperature"] { --pick: var(--magenta); }
+
+      .btn {
+        display: inline-block; margin-top: 22px; padding: 11px 26px;
+        background: transparent; color: var(--cyan);
+        border: 1px solid var(--cyan); cursor: pointer;
+        font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .1em;
+        transition: background .14s, color .14s;
+      }
+      .btn:hover { background: var(--cyan); color: var(--bg); }
+      .btn.danger { color: var(--red); border-color: var(--red); }
+      .btn.danger:hover { background: var(--red); color: #140306; }
+
+      .mods-list { margin-top: 20px; font-size: 11.5px; color: var(--dim); line-height: 1.9; }
+      .mods-list b { color: var(--fg); font-weight: 600; }
+
+      /* ---------- seed / footer ---------- */
+      #seed-bar {
+        position: absolute; bottom: 8px; right: 12px;
+        font-size: 10px; color: var(--dim); pointer-events: auto;
+        display: flex; gap: 14px; align-items: center;
+      }
+      #seed-bar code { color: #7f93b5; }
+      #seed-bar button {
+        background: none; border: 1px solid var(--line); color: var(--dim);
+        font-family: var(--mono); font-size: 9px; padding: 3px 7px; cursor: pointer;
+      }
+      #seed-bar button:hover { color: var(--cyan); border-color: var(--cyan); }
+
+      #help-hint {
+        position: absolute; bottom: 10px; left: 18px; max-width: 330px;
+        font-size: 10px; color: var(--dim); line-height: 1.75;
+      }
+      kbd {
+        border: 1px solid var(--line); padding: 0 4px; border-radius: 2px;
+        color: #8ba0c0; font-size: 9px;
+      }
+
+      #boot {
+        position: fixed; inset: 0; z-index: 40; background: var(--bg);
+        display: flex; align-items: center; justify-content: center;
+        flex-direction: column; gap: 14px;
+      }
+      #boot .big { font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
+      #boot .big i { color: var(--magenta); font-style: normal; }
+      #boot .sub { font-size: 11px; color: var(--dim); letter-spacing: .14em; }
+      .glitch-text { animation: gl 2.4s infinite steps(1); }
+      @keyframes gl {
+        0%, 92%, 100% { text-shadow: none; transform: none; }
+        93% { text-shadow: -2px 0 var(--magenta), 2px 0 var(--cyan); transform: translateX(1px); }
+        96% { text-shadow: 2px 0 var(--magenta), -2px 0 var(--cyan); transform: translateX(-1px); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud">
+      <div id="hud-top">
+        <div class="hud-cell" id="cell-stage">
+          <div class="label">Stage</div>
+          <div class="val mono-num" id="stage-val">1</div>
+        </div>
+        <div class="hud-cell" id="cell-bench">
+          <div class="label">Benchmark</div>
+          <div class="val mono-num"><span id="score-val">0</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="target-val">1000</span></span></div>
+          <div id="bench-bar"><div id="bench-fill"></div></div>
+          <div id="bench-name">—</div>
+        </div>
+        <div class="hud-cell" id="cell-act">
+          <div class="label">Activations</div>
+          <div class="val mono-num"><span id="act-val">20</span><span style="color:var(--dim);font-weight:400;font-size:14px"> / <span id="act-max">30</span></span></div>
+          <div class="act-pips" id="act-pips"></div>
+        </div>
+        <div class="hud-cell" id="cell-temp">
+          <div class="label">Temperature</div>
+          <div class="val mono-num" id="temp-val">0.7</div>
+          <div class="label" id="temp-name" style="margin-top:5px">Balanced</div>
+        </div>
+        <div id="hud-spacer"></div>
+        <div class="hud-cell readout">
+          <div class="label">Chain</div>
+          <div class="val mono-num" id="chain-val">0</div>
+        </div>
+        <div class="hud-cell readout">
+          <div class="label">Tier</div>
+          <div class="val mono-num" id="mult-val">×1.0</div>
+        </div>
+        <div class="hud-cell readout">
+          <div class="label">Pass</div>
+          <div class="val mono-num" id="launch-val">0</div>
+        </div>
+      </div>
+
+      <div id="temp-rail"></div>
+
+      <div id="charge-wrap"><div id="charge-fill"></div></div>
+
+      <div id="popups"></div>
+
+      <div id="help-hint">
+        <kbd>◄ ►</kbd> / mouse &nbsp;aim &nbsp;·&nbsp; <kbd>SPACE</kbd> / click &nbsp;charge + fire<br />
+        <kbd>1</kbd>–<kbd>4</kbd> &nbsp;temperature &nbsp;·&nbsp; <kbd>E</kbd> &nbsp;agentic override &nbsp;·&nbsp; <kbd>R</kbd> &nbsp;new run
+      </div>
+
+      <div id="seed-bar">
+        <span>seed <code id="seed-txt">—</code></span>
+        <button id="seed-copy">copy link</button>
+        <button id="seed-new">reroll</button>
+      </div>
+    </div>
+
+    <div id="overlay"><div class="sheet panel" id="sheet"></div></div>
+
+    <div id="boot">
+      <div class="big glitch-text">rogue<i>/</i>acc</div>
+      <div class="sub">initializing weights…</div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
