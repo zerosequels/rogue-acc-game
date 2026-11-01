@@ -171,14 +171,24 @@ export const UPGRADES: readonly Upgrade[] = [
     id: 'attention-head',
     name: 'New Attention Head',
     archetype: 'width',
-    description: 'Launch one extra token per shot. Each token scores at 70%.',
+    description: 'Launch one extra token per forward pass. Tokens share the pass, so each scores less.',
     flavor: 'parallel heads, parallel cascades, parallel benchmarks.',
     maxStacks: 3,
     weight: 9,
     apply: (m) => {
       m.orbsPerLaunch += 1
-      m.orbScoreMult *= 0.7
       m.maxOrbs = Math.min(12, m.maxOrbs + 2)
+      // Per-token value is RECOMPUTED from the token count, never compounded,
+      // so that TOTAL pass value is exactly 1.4^(stacks) — the +40% per pick
+      // budget, met by construction. A negative stack is therefore impossible.
+      //
+      // The original compounded orbScoreMult by 0.7 per stack. Token count
+      // grows linearly while 0.7^n decays geometrically, so `tools/upgrades.ts`
+      // measured stack 2 at +169% and stack 3 at **-17%** — a third pick made
+      // you strictly weaker. Two companion fixes landed alongside this one
+      // (tier normalisation in scoring.ts, spike sharing in scoreLanding);
+      // all three were needed, and the audit is what separated them.
+      m.orbScoreMult = Math.pow(1.4, m.orbsPerLaunch - 1) / m.orbsPerLaunch
     },
   },
   {
@@ -221,11 +231,14 @@ export const UPGRADES: readonly Upgrade[] = [
     id: 'prune-dead-neurons',
     name: 'Prune Dead Neurons',
     archetype: 'precision',
-    description: 'Removes 20% of ordinary weights at load. Survivors +15% value.',
+    description: 'Removes 15% of ordinary weights at load. Survivors +50% value.',
     flavor: 'sparsity is a feature. the holes are where the cascade lives.',
     maxStacks: 2,
     weight: 7,
-    apply: (m) => { m.pruneFraction = Math.min(0.45, m.pruneFraction + 0.2); m.pinValueMult += 0.15 },
+    // Was 20% pruned for +15% value, which the audit measured at **-7%** — the
+    // lost strikes (and lost tier progress) outweighed the bump, making this a
+    // strictly negative pick. Prune less, pay more.
+    apply: (m) => { m.pruneFraction = Math.min(0.35, m.pruneFraction + 0.15); m.pinValueMult += 0.5 },
   },
   {
     id: 'attention-mask',

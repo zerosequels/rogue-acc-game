@@ -46,17 +46,28 @@ export class Pass {
   }
 
   /**
-   * Effective pins for tier purposes: distinct pins plus a FLAT bonus per
-   * attention head struck.
+   * Effective pins for tier purposes: distinct pins, plus a FLAT bonus per
+   * attention head struck, divided by the number of tokens in the pass.
    *
-   * This bonus used to be scaled by `pinsPerTier`, which meant a single head
-   * advanced a whole tier on its own — the headless sweep showed that alone
-   * inflating a median pass from ~145 to ~315 and letting a random-aim bot
-   * clear stages in three passes. A head should accelerate the ladder, not
-   * skip a rung of it.
+   * Two separate fixes are encoded here, both found by `tools/upgrades.ts`:
+   *
+   * 1. The head bonus used to be scaled by `pinsPerTier`, so a single head
+   *    advanced a whole tier on its own. That alone inflated a median pass
+   *    from ~145 to ~315 and let a random-aim bot clear stages in three
+   *    passes. A head should accelerate the ladder, not skip a rung of it.
+   *
+   * 2. The ladder is shared across every token in a pass, so launching three
+   *    tokens used to reach the top tier that one token cannot — measured at
+   *    +205% for a single stack of New Attention Head, against a +40% budget.
+   *    Normalising by token count makes the ladder measure CASCADE QUALITY
+   *    rather than token count: with three tokens you need three times the
+   *    strikes for the same tier, which is the honest comparison. Multi-token
+   *    launches still win on board coverage and spike chances — they just no
+   *    longer get the multiplier for free.
    */
-  effectivePins(_mods: Mods): number {
-    return this.struck.size + this.criticalHits * SCORE.criticalTierBonus
+  effectivePins(mods: Mods): number {
+    const raw = this.struck.size + this.criticalHits * SCORE.criticalTierBonus
+    return raw / Math.max(1, mods.orbsPerLaunch)
   }
 
   tierIndex(mods: Mods): number {
@@ -174,10 +185,20 @@ export function scoreLanding(
     // scored nothing, award a floor so a blind spike hit is never worthless.
     if (pass.spikeApplied) return null
     pass.spikeApplied = true
+
+    // The jackpot is a PASS-level prize, so it must be shared between the
+    // tokens of that pass. Otherwise every extra token is another lottery
+    // ticket on the same pass-wide multiplier: `tools/upgrades.ts` measured a
+    // single stack of New Attention Head at +186% purely from tripled spike
+    // odds, and a further stack at -8% as those odds saturated. Dividing the
+    // bonus portion keeps expected spike value roughly flat in token count,
+    // so wide builds buy board COVERAGE rather than a free jackpot.
+    const spikeMult = 1 + (mods.spikeMult - 1) / Math.max(1, mods.orbsPerLaunch)
+
     const before = pass.score
     const after = before > 0
-      ? Math.round(before * mods.spikeMult)
-      : Math.round(SCORE.basePinValue * mods.spikeMult * mods.pinValueMult * ctx.tempScoreMult)
+      ? Math.round(before * spikeMult)
+      : Math.round(SCORE.basePinValue * spikeMult * mods.pinValueMult * ctx.tempScoreMult)
     pass.score = after
     pass.eventCount++
     return {

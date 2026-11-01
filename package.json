@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "sim": "tsx tools/simulate.ts",
-    "smoke": "vite build && node tools/smoke.mjs"
+    "smoke": "vite build && node tools/smoke.mjs",
+    "upgrades": "tsx tools/upgrades.ts"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",

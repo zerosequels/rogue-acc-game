@@ -20,6 +20,7 @@ npm run dev          # http://localhost:5173
 | `npm run build` | Typecheck, then production bundle into `dist/` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run sim` | **Headless balance sweep** — see [Tuning](#tuning) |
+| `npm run upgrades` | **Upgrade marginal-value audit** — measures every pick against the +40% budget |
 | `npm run smoke` | Build, then drive the real game in headless Chromium |
 
 ---
@@ -152,6 +153,32 @@ board fallbacks     0%
 
 Read it as: an unskilled random-aim bot should win *rarely but not never*. If a
 bot that does not aim clears most runs, the game has no skill ceiling.
+
+### Upgrade audit
+
+`npm run upgrades` measures every upgrade (and every stack of it) against the
++40% budget by simulating passes with and without it on identical boards and
+inputs. It found three defects the full-run sweep could not isolate:
+
+- **New Attention Head** compounded per-token value by 0.7 while token count
+  grew linearly: stack 2 measured **+169%**, stack 3 **−17%** — a pick that
+  made you strictly weaker. Per-token value is now recomputed so total pass
+  value is exactly `1.4^stacks`, which meets the budget by construction and
+  makes a negative stack impossible.
+- **The multiplier ladder was shared across a whole pass**, so three tokens
+  reached a tier one token cannot — buying free multiplier with token count.
+  The ladder is now normalised by token count, so it measures cascade quality.
+- **The spike pocket multiplies the whole pass**, so every extra token was
+  another lottery ticket on the same jackpot. The bonus portion is now divided
+  across the pass, keeping expected spike value flat in token count.
+
+**Prune Dead Neurons** was also strictly negative (−7%: lost strikes outweighed
+the value bump) and is now 15% pruned for +50% value.
+
+Known blind spot: **LoRA: Chain Reaction and Explosive Weights read 0%** in the
+audit because their effects live in `core/game.ts` rather than the sim layer,
+so the headless harness never executes them. Moving those two into `sim/` is
+the top outstanding structural item.
 
 The sim layer imports nothing from Three.js or the DOM, which is what makes the
 harness possible. **Keep it that way.**
