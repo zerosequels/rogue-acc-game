@@ -144,6 +144,79 @@ export const SCORE = {
 } as const
 
 // ---------------------------------------------------------------------------
+// Signal propagation — the v2 scoring core.
+//
+// A struck node fires its downward edges. Nodes in the layer below score
+// WITHOUT the ball touching them, and fire their own edges in turn. Downward
+// only, so it cannot loop and depth bounds the cascade.
+//
+// These are the most dangerous numbers in the game. Propagation is
+// multiplicative across a fan-out of 2-3, so retention slightly too high turns
+// every contact into a board-wide flood. `npm run propagation` sweeps them.
+// ---------------------------------------------------------------------------
+
+export const SIGNAL = {
+  /** Fraction of power each hop carries to the next layer. */
+  retention: 0.45,
+  /** Signal below this fraction of the originating strike stops. */
+  floor: 0.08,
+  /** Hard hop cap, independent of the floor. Backstop against a tuning slip. */
+  maxHops: 6,
+  /** GELU doubles outgoing strength; this is that multiplier. */
+  geluBoost: 2.0,
+  /** An attention head fires every downward edge rather than the usual two. */
+  headFiresAllEdges: true,
+} as const
+
+// ---------------------------------------------------------------------------
+// Node and bucket progression
+// ---------------------------------------------------------------------------
+
+export const PROGRESSION = {
+  /** Node value is `basePinValue * level`. Linear keeps the HUD readable. */
+  maxNodeLevel: 12,
+  /** Bucket multiplier is `1 + bucketLevelStep * level`. */
+  bucketLevelStep: 0.25,
+  maxBucketLevel: 10,
+  /** Most a node may carry. The shop charges much more for the second. */
+  maxTransformsPerNode: 2,
+} as const
+
+export const TRANSFORMS = {
+  /** attention-head: value multiplier. Replaces v1's flat criticalPinValue. */
+  attentionHeadMult: 3,
+  /** layer-norm: per copy, added to every node in the same layer. */
+  layerNormBonus: 0.2,
+  /** dropout: chance to not fire at all, and the payoff when it does. */
+  dropoutChance: 0.3,
+  dropoutMult: 3,
+  /** embedding: the first node struck in a pass pays this. */
+  embeddingMult: 4,
+  /** sparse-moe: nodes needed in its layer before it wakes, then its payout. */
+  moeThreshold: 3,
+  moeMult: 5,
+  /** quantised: half value now, cheaper levels later (shop, Pass 3). */
+  quantisedMult: 0.5,
+  /** checkpoint: fraction paid again on the following pass. */
+  checkpointEcho: 0.5,
+
+  /** logit-boost: multiplies the bucket's own multiplier. */
+  logitBoostMult: 2,
+  /** top-k: nodes a pass must strike to trigger, and the payout. */
+  topKThreshold: 15,
+  topKMult: 5,
+  /** eos: ends the pass immediately but banks it at this multiplier. */
+  eosMult: 3,
+  /** nucleus: payout randomised in this range. */
+  nucleusMin: 0.2,
+  nucleusMax: 4,
+  /** cache-hit: fraction paid again next pass. */
+  cacheEcho: 1.0,
+  /** revenue-share: money paid on landing. Spends in Pass 3. */
+  revenueShare: 1,
+} as const
+
+// ---------------------------------------------------------------------------
 // Activation economy — ONE pool for the whole run, not per stage.
 //
 // Equilibrium check: a stage costs ~8 launches, a clear refunds 8, so the pool
@@ -202,11 +275,14 @@ export const STAGES = {
   count: 8,
   /**
    * Stage 1 target. Calibrated against the headless sweep in `tools/simulate.ts`:
-   * a Balanced pass on a base checkpoint has a median of ~280, and the intended
-   * equilibrium is ~8 passes per stage (which exactly matches the +8 refund, so
-   * a competently played stage breaks even on activations).
+   * PROVISIONAL. Pass 3 replaces this curve entirely with funding rounds, so
+   * this is only sized to keep Pass 2 playable: `npm run propagation` measures
+   * a median pass of ~390 on the 70-node board with signal at 0.45 retention,
+   * and the sweep put the unskilled baseline at 6 passes per benchmark against
+   * an intended 8 — so this is scaled to land near 8 (which matches the +8
+   * clear refund, meaning a competently played benchmark breaks even).
    */
-  baseTarget: 2200,
+  baseTarget: 4400,
   growth: 1.4,
 } as const
 
@@ -294,6 +370,10 @@ export const VISUAL = {
   /** Resolution of the glyph-label canvas. The label layer is one texture over
    *  the whole board, redrawn only when levels or transforms change. */
   labelPixelsPerUnit: 54,
+  /** Milliseconds between hops when presenting a forward pass. Propagation is
+   *  instantaneous and already scored; this only staggers the SHOW, so the
+   *  player sees a wave travel down rather than a subtree blink on at once. */
+  signalHopMs: 65,
   /** Horizontal breathing room either side of the board. */
   cameraPadding: 1.0,
   /** Clearance above the launcher, so it clears the HUD bar. */

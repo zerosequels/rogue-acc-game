@@ -1,70 +1,66 @@
 /**
- * scoring.ts — forward-pass scoring.
+ * scoring.ts — what a weight is worth, right now.
  *
- * One "forward pass" is everything that happens from a launch until the last of
- * its orbs leaves the board. Score accumulates in the pass, then commits to the
- * stage total. Holding it uncommitted is what makes a spike pocket dramatic: it
- * multiplies the whole pass retroactively.
+ * One "forward pass" runs from launch until the last token leaves the board.
+ * Score accumulates uncommitted in `Pass` and only lands on the benchmark
+ * total at the end, which is what lets a benchmark spike multiply the whole
+ * pass retroactively.
  *
- * Key rule: a pin scores ONCE PER PASS, not once per contact. Without that,
- * an orb rattling in a pocket of three pins farms them forever and the
- * multiplier ladder becomes meaningless. "Chain" in the HUD is therefore the
- * count of DISTINCT weights struck.
+ * The rule everything else depends on: **a node scores once per pass**,
+ * whether the ball touched it or a signal reached it. Without that, a token
+ * rattling between three weights farms them forever, and — far worse in v2 —
+ * propagation re-entering a node it already lit would never terminate.
  */
 
-import { SCORE } from '../config/balance'
+import { SCORE, SIGNAL, TRANSFORMS } from '../config/balance'
 import type { Rng } from '../core/rng'
 import type { Mods } from '../config/upgrades'
-import { isAttentionHead, type NodeDef, type PocketDef } from './board'
+import { isAttentionHead, type Board, type NodeDef, type PocketDef } from './board'
 import type { OrbHandle } from './physics'
 
 export interface ScoreEvent {
-  /** Points actually awarded (already fully multiplied). */
   points: number
   x: number
   y: number
-  kind: 'pin' | 'critical' | 'spike' | 'pocket' | 'dud' | 'hallucination' | 'detonation'
-  /** Tier multiplier in force when this scored, for the popup label. */
+  kind:
+    | 'pin' | 'critical' | 'spike' | 'pocket' | 'dud'
+    | 'hallucination' | 'detonation' | 'signal' | 'echo'
   tierMult: number
+  /** Hop distance from the originating contact. 0 means the ball touched it. */
+  hop?: number
+  /** Node this came from, so the render layer can find it without a search. */
+  nodeId?: number
+}
+
+/** Payouts deferred to the next pass by Checkpoint / Cache Hit. */
+export interface EchoPayout {
+  points: number
+  x: number
+  y: number
 }
 
 /** Live state of the current forward pass. */
 export class Pass {
-  /** Distinct pin ids struck this pass. */
   readonly struck = new Set<number>()
-  /** Attention heads struck, for tier bonus accounting. */
   criticalHits = 0
-  /** Accumulated, uncommitted score. */
   score = 0
-  /** Number of score-bearing events, used for pacing audio/visual intensity. */
   eventCount = 0
-  /** Set once a spike has already fired this pass (one jackpot per pass). */
   spikeApplied = false
+  /** Nodes struck per layer, for Sparse MoE's wake condition. */
+  readonly struckByLayer = new Map<number, number>()
+  /** True once any node has scored — Embedding keys off this. */
+  anyStruck = false
+  /** Set by an EOS bucket; the caller must stop the pass. */
+  ended = false
+  /** Money earned mid-pass by Revenue Share buckets. Spends in Pass 3. */
+  money = 0
+  /** Payouts this pass has deferred to the next one. */
+  readonly echoes: EchoPayout[] = []
 
   get chain(): number {
     return this.struck.size
   }
 
-  /**
-   * Effective pins for tier purposes: distinct pins, plus a FLAT bonus per
-   * attention head struck, divided by the number of tokens in the pass.
-   *
-   * Two separate fixes are encoded here, both found by `tools/upgrades.ts`:
-   *
-   * 1. The head bonus used to be scaled by `pinsPerTier`, so a single head
-   *    advanced a whole tier on its own. That alone inflated a median pass
-   *    from ~145 to ~315 and let a random-aim bot clear stages in three
-   *    passes. A head should accelerate the ladder, not skip a rung of it.
-   *
-   * 2. The ladder is shared across every token in a pass, so launching three
-   *    tokens used to reach the top tier that one token cannot — measured at
-   *    +205% for a single stack of New Attention Head, against a +40% budget.
-   *    Normalising by token count makes the ladder measure CASCADE QUALITY
-   *    rather than token count: with three tokens you need three times the
-   *    strikes for the same tier, which is the honest comparison. Multi-token
-   *    launches still win on board coverage and spike chances — they just no
-   *    longer get the multiplier for free.
-   */
   effectivePins(mods: Mods): number {
     const raw = this.struck.size + this.criticalHits * SCORE.criticalTierBonus
     return raw / Math.max(1, mods.orbsPerLaunch)
@@ -86,47 +82,114 @@ export class Pass {
 
   reset(): void {
     this.struck.clear()
+    this.struckByLayer.clear()
     this.criticalHits = 0
     this.score = 0
     this.eventCount = 0
     this.spikeApplied = false
+    this.anyStruck = false
+    this.ended = false
+    this.money = 0
+    this.echoes.length = 0
   }
 }
 
 export interface ScoringContext {
   mods: Mods
-  /** Selected temperature's score multiplier. */
+  /** Retained from v1's temperature; always 1 now that temperature is cut. */
   tempScoreMult: number
-  /** Selected temperature value, gates Hallucination Engine. */
   tempValue: number
   rng: Rng
+  /** Per-layer value bonus from Layer Norm. Recomputed when the board changes. */
+  layerBonus: readonly number[]
 }
 
 /**
- * Score a pin contact. Returns null when the pin was already struck this pass
- * (the common case during a rattle) so callers can skip all feedback.
+ * Layer Norm is the only transform whose effect is not local to its own node,
+ * so it is precomputed per board rather than searched per strike.
+ */
+export function computeLayerBonus(board: Board): number[] {
+  const bonus = new Array<number>(board.layers).fill(1)
+  for (const n of board.nodes) {
+    if (n.removed) continue
+    if (n.transforms.includes('layer-norm')) {
+      bonus[n.layer] = (bonus[n.layer] ?? 1) + TRANSFORMS.layerNormBonus
+    }
+  }
+  return bonus
+}
+
+/**
+ * Raw value of a node before pass-level multipliers. Shared by contact
+ * scoring and signal scoring so the two can never drift apart.
+ */
+function nodeBaseValue(node: NodeDef, ctx: ScoringContext): number {
+  let v = SCORE.basePinValue * node.level
+  if (isAttentionHead(node)) v *= TRANSFORMS.attentionHeadMult
+  if (node.transforms.includes('quantised')) v *= TRANSFORMS.quantisedMult
+  v *= ctx.layerBonus[node.layer] ?? 1
+  return v
+}
+
+/**
+ * Transforms whose payout depends on pass state rather than the node alone.
+ * Returns a multiplier, or null when the node refuses to fire (Dropout).
+ */
+function situationalMult(node: NodeDef, pass: Pass, ctx: ScoringContext): number | null {
+  let m = 1
+
+  if (node.transforms.includes('dropout')) {
+    if (ctx.rng.next() < TRANSFORMS.dropoutChance) return null
+    m *= TRANSFORMS.dropoutMult
+  }
+  if (node.transforms.includes('embedding') && !pass.anyStruck) {
+    m *= TRANSFORMS.embeddingMult
+  }
+  if (node.transforms.includes('sparse-moe')) {
+    const inLayer = pass.struckByLayer.get(node.layer) ?? 0
+    if (inLayer < TRANSFORMS.moeThreshold) return null
+    m *= TRANSFORMS.moeMult
+  }
+  return m
+}
+
+function registerStrike(pass: Pass, node: NodeDef): void {
+  pass.struck.add(node.id)
+  pass.struckByLayer.set(node.layer, (pass.struckByLayer.get(node.layer) ?? 0) + 1)
+  if (isAttentionHead(node)) pass.criticalHits++
+}
+
+/**
+ * Score a ball contact. Returns null when the node was already scored this
+ * pass (the common case during a rattle) so callers can skip all feedback.
  */
 export function scorePin(
   pass: Pass,
-  pin: NodeDef,
+  node: NodeDef,
   orb: OrbHandle,
   ctx: ScoringContext,
 ): ScoreEvent | null {
-  if (pass.struck.has(pin.id)) return null
-  pass.struck.add(pin.id)
-  if (isAttentionHead(pin)) pass.criticalHits++
+  if (pass.struck.has(node.id)) return null
+
+  const situational = situationalMult(node, pass, ctx)
+  // A refusing node still counts as struck — otherwise Dropout would be
+  // re-rolled every time the ball brushed it.
+  registerStrike(pass, node)
+  if (situational === null) {
+    pass.anyStruck = true
+    return { points: 0, x: node.x, y: node.y, kind: 'dud', tierMult: pass.tierMult(ctx.mods), hop: 0, nodeId: node.id }
+  }
 
   const { mods } = ctx
   const tierMult = pass.tierMult(mods)
-
-  // Gradient Surge ramps base value with every weight already struck.
   const surge = mods.gradientSurge * (pass.struck.size - 1)
-  const base = (isAttentionHead(pin) ? SCORE.criticalPinValue : SCORE.basePinValue) + surge
+  const base = nodeBaseValue(node, ctx) + surge
 
-  let points = base * mods.pinValueMult * tierMult * ctx.tempScoreMult * orb.scoreScale * mods.scoreMult
-  let kind: ScoreEvent['kind'] = isAttentionHead(pin) ? 'critical' : 'pin'
+  let points =
+    base * situational * mods.pinValueMult * tierMult * ctx.tempScoreMult *
+    orb.scoreScale * mods.scoreMult
+  let kind: ScoreEvent['kind'] = isAttentionHead(node) ? 'critical' : 'pin'
 
-  // --- Hallucination Engine: only active at Creative (1.3) and above ---
   if (mods.hallucinationChance > 0 && ctx.tempValue >= 1.3) {
     const roll = ctx.rng.next()
     if (roll < mods.hallucinationDudChance) {
@@ -141,27 +204,75 @@ export function scorePin(
   points = Math.round(points)
   pass.score += points
   pass.eventCount++
+  pass.anyStruck = true
 
-  return { points, x: pin.x, y: pin.y, kind, tierMult }
+  if (node.transforms.includes('checkpoint')) {
+    pass.echoes.push({
+      points: Math.round(points * TRANSFORMS.checkpointEcho),
+      x: node.x,
+      y: node.y,
+    })
+  }
+
+  return { points, x: node.x, y: node.y, kind, tierMult, hop: 0, nodeId: node.id }
 }
 
 /**
- * Score a pin destroyed by Explosive Weights. Detonated pins pay immediately
- * and still count toward the chain, but never trigger further detonations
- * (no recursive chain — that is what the maxOrbs cap is for elsewhere).
+ * Score a node reached by signal rather than contact. `power` is the fraction
+ * of the originating strike still carried at this hop.
  */
-export function scoreDetonation(
+export function scoreSignal(
   pass: Pass,
-  pin: NodeDef,
+  node: NodeDef,
+  power: number,
+  hop: number,
   ctx: ScoringContext,
 ): ScoreEvent | null {
-  if (pass.struck.has(pin.id)) return null
-  pass.struck.add(pin.id)
+  if (pass.struck.has(node.id)) return null
+
+  const situational = situationalMult(node, pass, ctx)
+  registerStrike(pass, node)
+  if (situational === null) {
+    pass.anyStruck = true
+    return { points: 0, x: node.x, y: node.y, kind: 'dud', tierMult: pass.tierMult(ctx.mods), hop, nodeId: node.id }
+  }
+
+  const { mods } = ctx
+  const tierMult = pass.tierMult(mods)
+  const base = nodeBaseValue(node, ctx)
+  const points = Math.round(
+    base * situational * power * mods.pinValueMult * tierMult *
+      ctx.tempScoreMult * mods.scoreMult,
+  )
+
+  pass.score += points
+  pass.eventCount++
+  pass.anyStruck = true
+
+  if (node.transforms.includes('checkpoint')) {
+    pass.echoes.push({
+      points: Math.round(points * TRANSFORMS.checkpointEcho),
+      x: node.x,
+      y: node.y,
+    })
+  }
+
+  return { points, x: node.x, y: node.y, kind: 'signal', tierMult, hop, nodeId: node.id }
+}
+
+/** Detonated weights (Explosive Weights) pay above base and reform next pass. */
+export function scoreDetonation(
+  pass: Pass,
+  node: NodeDef,
+  ctx: ScoringContext,
+): ScoreEvent | null {
+  if (pass.struck.has(node.id)) return null
+  registerStrike(pass, node)
 
   const { mods } = ctx
   const tierMult = pass.tierMult(mods)
   const surge = mods.gradientSurge * (pass.struck.size - 1)
-  const base = SCORE.basePinValue + surge
+  const base = nodeBaseValue(node, ctx) + surge
   const points = Math.round(
     base * mods.pinValueMult * tierMult * ctx.tempScoreMult * mods.scoreMult *
       SCORE.detonationValueMult,
@@ -169,10 +280,11 @@ export function scoreDetonation(
 
   pass.score += points
   pass.eventCount++
-  return { points, x: pin.x, y: pin.y, kind: 'detonation', tierMult }
+  pass.anyStruck = true
+  return { points, x: node.x, y: node.y, kind: 'detonation', tierMult }
 }
 
-/** Resolve an orb landing in a bottom pocket. */
+/** Resolve a token landing in an output bucket. */
 export function scoreLanding(
   pass: Pass,
   pocket: PocketDef,
@@ -181,20 +293,17 @@ export function scoreLanding(
 ): ScoreEvent | null {
   const { mods } = ctx
 
+  if (pocket.transform === 'revenue-share') pass.money += TRANSFORMS.revenueShare
+
   if (pocket.kind === 'spike') {
-    // One jackpot per pass: multiplies everything banked so far. If the pass
-    // scored nothing, award a floor so a blind spike hit is never worthless.
     if (pass.spikeApplied) return null
     pass.spikeApplied = true
 
-    // The jackpot is a PASS-level prize, so it must be shared between the
-    // tokens of that pass. Otherwise every extra token is another lottery
-    // ticket on the same pass-wide multiplier: `tools/upgrades.ts` measured a
-    // single stack of New Attention Head at +186% purely from tripled spike
-    // odds, and a further stack at -8% as those odds saturated. Dividing the
-    // bonus portion keeps expected spike value roughly flat in token count,
-    // so wide builds buy board COVERAGE rather than a free jackpot.
-    const spikeMult = 1 + (mods.spikeMult - 1) / Math.max(1, mods.orbsPerLaunch)
+    // The jackpot is a PASS-level prize and must be shared between the tokens
+    // of that pass, or every extra token is another ticket on the same draw.
+    let spikeMult = 1 + (mods.spikeMult - 1) / Math.max(1, mods.orbsPerLaunch)
+    spikeMult *= bucketMultiplier(pocket)
+    spikeMult *= bucketTransformMult(pocket, pass, ctx)
 
     const before = pass.score
     const after = before > 0
@@ -202,24 +311,62 @@ export function scoreLanding(
       : Math.round(SCORE.basePinValue * spikeMult * mods.pinValueMult * ctx.tempScoreMult)
     pass.score = after
     pass.eventCount++
-    return {
-      points: after - before,
-      x: pocket.x,
-      y: orb.y,
-      kind: 'spike',
-      tierMult: pass.tierMult(mods),
-    }
+    applyBucketEcho(pass, pocket, after - before)
+    return { points: after - before, x: pocket.x, y: orb.y, kind: 'spike', tierMult: pass.tierMult(mods) }
   }
 
   if (pocket.kind === 'pocket') {
+    const mult = bucketMultiplier(pocket) * bucketTransformMult(pocket, pass, ctx)
     const points = Math.round(
-      SCORE.pocketBonus * mods.pinValueMult * ctx.tempScoreMult * orb.scoreScale * mods.scoreMult,
+      SCORE.pocketBonus * mult * mods.pinValueMult * ctx.tempScoreMult *
+        orb.scoreScale * mods.scoreMult,
     )
     pass.score += points
     pass.eventCount++
+    applyBucketEcho(pass, pocket, points)
     return { points, x: pocket.x, y: orb.y, kind: 'pocket', tierMult: pass.tierMult(mods) }
   }
 
   // 'drain' — a dead neuron. No points, but the UI still marks it.
   return null
 }
+
+export function bucketMultiplier(pocket: PocketDef): number {
+  return 1 + PROGRESSION_BUCKET_STEP * pocket.level
+}
+
+/** Pulled out so `balance.ts` stays the only place the step is written. */
+import { PROGRESSION } from '../config/balance'
+const PROGRESSION_BUCKET_STEP = PROGRESSION.bucketLevelStep
+
+function bucketTransformMult(pocket: PocketDef, pass: Pass, ctx: ScoringContext): number {
+  switch (pocket.transform) {
+    case 'logit-boost':
+      return TRANSFORMS.logitBoostMult
+    case 'top-k':
+      return pass.struck.size >= TRANSFORMS.topKThreshold ? TRANSFORMS.topKMult : 1
+    case 'eos':
+      pass.ended = true
+      return TRANSFORMS.eosMult
+    case 'nucleus':
+      return ctx.rng.range(TRANSFORMS.nucleusMin, TRANSFORMS.nucleusMax)
+    default:
+      return 1
+  }
+}
+
+function applyBucketEcho(pass: Pass, pocket: PocketDef, points: number): void {
+  if (pocket.transform !== 'cache-hit' || points <= 0) return
+  pass.echoes.push({
+    points: Math.round(points * TRANSFORMS.cacheEcho),
+    x: pocket.x,
+    y: pocket.halfWidth,
+  })
+}
+
+/** Does this bucket hand the token back for a free relaunch? */
+export function returnsToken(pocket: PocketDef): boolean {
+  return pocket.transform === 'beam-search'
+}
+
+export { SIGNAL }

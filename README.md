@@ -22,6 +22,8 @@ npm run dev          # http://localhost:5173
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run sim` | **Headless balance sweep** — see [Tuning](#tuning) |
 | `npm run upgrades` | **Upgrade marginal-value audit** — measures every pick against the +40% budget |
+| `npm run propagation` | **Signal retention sweep** — the forward pass tuned by measurement |
+| `npm run shot` | Build, then screenshot the board mid-propagation |
 | `npm run smoke` | Build, then drive the real game in headless Chromium |
 
 ---
@@ -76,6 +78,43 @@ Mute with `M` or the button bottom-right; the preference persists in
 `localStorage`.
 
 ---
+
+## Signal propagation
+
+Scoring does not happen only where the ball touches. A struck node fires its
+**downward** edges; nodes in the layer below score without being touched, and
+fire their own edges in turn. Signal retains **45% per hop** and dies below
+**8%** of the originating strike.
+
+Three properties make this safe to run inside a physics step:
+
+- **Downward only.** Edges are generated layer *N* → layer *N+1* and never
+  otherwise, so the graph is a DAG by construction. There is no cycle to guard.
+- **Score once per pass.** A node already scored is not re-entered, so the
+  wavefront can never revisit and the work is bounded by node count regardless
+  of wiring.
+- **Bounded depth.** Signal dies at the floor; `SIGNAL.maxHops` caps it
+  independently as a backstop against a tuning slip.
+
+Retention was *measured*, not chosen. `npm run propagation` sweeps it against
+real boards and real physics:
+
+```
+retention  contacts  signalled  total lit  score p50  passes to clear
+   0.00      10.0        0.2       10.1        301       7.3   (edges off)
+   0.35       5.5       16.4       21.9        367       6.0
+   0.45       4.8       22.1       26.8        416       5.3
+   0.60       4.3       25.7       29.9        517       4.3
+```
+
+Two things that table shows which intuition would have missed. **Node counts
+step rather than slide** — retention really selects the *hop count* via the
+floor (0.30–0.40 all give two hops, 0.45–0.50 give three, 0.55–0.60 give four).
+And **contacts fall as retention rises**, because a node already lit by signal
+is already scored, so the ball's later contacts on it do nothing.
+
+At 0.45 a forward pass lights 27 of 68 nodes and signal contributes about two
+thirds of the score — propagation is the scoring core, not a garnish.
 
 ## The one design decision worth explaining
 

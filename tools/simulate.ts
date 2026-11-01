@@ -20,8 +20,9 @@ import { deriveRng, mintSeed, Rng } from '../src/core/rng'
 import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
-import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
+import { computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
 import { resolveCriticalStrike } from '../src/sim/effects'
+import { buildSignalGraph, makeSignalResult, propagate } from '../src/sim/propagation'
 import { isAttentionHead, type Board } from '../src/sim/board'
 
 const SEEDS = Number(process.argv[2] ?? 24)
@@ -71,11 +72,14 @@ function simulatePass(
   const tier = TEMPERATURES[tempIndex]!
   const events = makeStepEvents()
   const pass = new Pass()
+  const graph = buildSignalGraph(board)
+  const sig = makeSignalResult()
   const ctx: ScoringContext = {
     mods,
     tempScoreMult: tier.scoreMult,
     tempValue: tier.value,
     rng,
+    layerBonus: computeLayerBonus(board),
   }
 
   // Explosive Weights removes pins during a pass; clear that before rebuilding
@@ -106,6 +110,7 @@ function simulatePass(
     world.stepOnce(events)
     for (const hit of events.pinHits) {
       const ev = scorePin(pass, hit.pin, hit.orb, ctx)
+      if (ev) propagate(graph, pass, hit.pin, ctx, sig)
       if (ev && isAttentionHead(hit.pin)) {
         const outcome = resolveCriticalStrike(world, pass, hit.pin, hit.orb, ctx, mods, ORB.restitution * tier.bounce)
         for (const d of outcome.detonated) detonated.push(d.pin)

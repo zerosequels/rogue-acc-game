@@ -71,18 +71,41 @@ art direction can be judged on its own.
 
 Goal: the new scoring core, tuned. Upgrades applied by debug command, not bought.
 
-- [ ] Downward signal propagation with per-hop decay and a cutoff floor
-- [ ] A node scores once per pass whether struck or signalled
-- [ ] Node levels (`10 x level`) and the 9 node transforms
-- [ ] Bucket levels (`1 + 0.25 x level`) and the 7 bucket transforms
-- [ ] Harness extended to measure propagation yield per node
-- [ ] Propagation retention tuned in the harness before it is tuned by feel
-- [ ] Debug commands to grant levels/transforms for testing
+- [x] Downward signal propagation with per-hop decay and a cutoff floor
+- [x] A node scores once per pass whether struck or signalled
+- [x] Node levels (`10 x level`) and the 9 node transforms
+- [x] Bucket levels (`1 + 0.25 x level`) and the 7 bucket transforms
+- [x] Harness extended to measure propagation yield per node (`npm run propagation`)
+- [x] Propagation retention tuned in the harness before it is tuned by feel
+- [x] Debug commands to grant levels/transforms for testing
+
+**Pass 2 notes**
+
+- Retention stayed at the spec's proposed **0.45**, but it was *measured*, not
+  assumed. The sweep showed node counts STEP rather than slide, because
+  retention really selects the hop count via the floor: 0.30-0.40 all give 2
+  hops, 0.45-0.50 give 3, 0.55-0.60 give 4. 0.45 lands on the predicted three
+  hops and lights 27 of 68 nodes.
+- Signal contributes roughly two thirds of pass score, so propagation really is
+  the scoring core rather than a garnish.
+- Contacts DROP as retention rises (10.0 -> 4.8). Correct: a node already lit
+  by signal is already scored, so the ball's later contacts on it do nothing.
+- `SIGNAL.maxHops` is a backstop, not the mechanism. The floor does the real
+  bounding; maxHops only catches a tuning slip.
+- **GELU and Residual are multiplicative on propagation** (doubling outgoing
+  strength / making a hop lossless). With both scattered plus L4 nodes, a
+  debug run scored 119,773 against a 3,300 target. They will need careful
+  pricing in the Pass 3 shop.
+- `STAGES.baseTarget` is provisional at 4,400. Pass 3 deletes this curve.
+- `tools/shot.mjs` added: boots, grants transforms, fires one pass and
+  screenshots mid-propagation. The smoke test drives a whole run and is far
+  too slow for visual iteration.
 
 ## Pass 3 — Deck, shop, money
 
 Goal: the complete v2 loop.
 
+- [ ] **Remove temperature** — the deck replaces the per-launch choice
 - [ ] Per-card deck: types, levels, transforms, random draw queue
 - [ ] The 6 card transforms
 - [ ] Shop with three precision tiers and reroll

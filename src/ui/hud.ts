@@ -28,6 +28,8 @@ const POPUP_COLORS: Record<ScoreEvent['kind'], string> = {
   dud: 'var(--dim)',
   hallucination: 'var(--magenta)',
   detonation: 'var(--amber)',
+  signal: 'var(--lime)',
+  echo: 'var(--dim)',
 }
 
 export class Hud {

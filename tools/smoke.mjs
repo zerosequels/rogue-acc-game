@@ -151,6 +151,44 @@ if (shook.peak < 0.02) throw new Error('punch() did not move the camera: ' + JSO
 console.log(`✓ screen shake displaces camera (peak ${shook.peak.toFixed(3)} world units)`)
 
 // ---------------------------------------------------------------------------
+// Pass 2: signal propagation must actually fire, and transforms must apply.
+// ---------------------------------------------------------------------------
+const sig = await page.evaluate(() => {
+  const g = window.game
+  const before = g.debug.report()
+  // Grant a spread of transforms and levels, then fire one pass and see
+  // whether signal-scored nodes appear.
+  g.debug.level(3)
+  g.debug.scatter('gelu', 4)
+  g.debug.scatter('residual', 4)
+  g.debug.scatter('layer-norm', 3)
+  g.debug.bucket(0, 4, 'top-k')
+  return { before, after: g.debug.report() }
+})
+if (!sig.after || sig.after.avgLevel !== 3) throw new Error('debug level grant failed: ' + JSON.stringify(sig.after))
+if (!sig.after.transforms.gelu) throw new Error('transform grant failed: ' + JSON.stringify(sig.after.transforms))
+console.log(`✓ transforms applied: ${JSON.stringify(sig.after.transforms)}`)
+console.log(`✓ buckets: ${sig.after.buckets.join(' | ')}`)
+
+// Fire a pass and confirm signal-scored nodes outnumber contacts.
+await page.waitForFunction(() => window.game?.['run']?.phase === 'aim', { timeout: 20000 }).catch(() => {})
+const beforePins = await page.evaluate(() => window.game['run'].totals.pinsStruck)
+await page.keyboard.down(' ')
+await page.waitForTimeout(300)
+await page.keyboard.up(' ')
+await page.waitForFunction(() => window.game?.['run']?.phase !== 'resolving', { timeout: 25000 }).catch(() => {})
+await page.waitForTimeout(500)
+const afterPins = await page.evaluate(() => window.game['run'].totals.pinsStruck)
+const lit = afterPins - beforePins
+if (lit < 8) throw new Error(`propagation did not fire: only ${lit} nodes lit in one pass`)
+console.log(`✓ forward pass lit ${lit} nodes from one launch`)
+
+if (process.env.ACTION_SHOT) {
+  await page.screenshot({ path: 'tools/signal.png' })
+  console.log('✓ signal shot written to tools/signal.png')
+}
+
+// ---------------------------------------------------------------------------
 // Full-run drive: the overlay -> upgrade -> next-stage path is the part the
 // headless sim cannot cover, because it lives entirely in DOM and orchestration.
 // Hammer it until the run actually ends.

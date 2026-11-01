@@ -265,6 +265,35 @@ export class Audio {
     this.noise(0.13, 0.06, 700 + charge * 1400, 320)
   }
 
+  /**
+   * A forward pass firing. Pitch and voice count scale with how far the
+   * signal reached, so a big propagation is audibly bigger without needing
+   * one voice per node — which at 20 nodes would be a wall of clicks.
+   */
+  signal(reached: number): void {
+    if (!this.ready || reached <= 0) return
+    const ctx = this.ctx!
+    const voices = Math.min(4, 1 + Math.floor(reached / 4))
+    for (var v = 0; v < voices; v++) {
+      var t = ctx.currentTime + v * 0.045
+      var osc = ctx.createOscillator()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(240 * Math.pow(2, v / 6), t)
+      osc.frequency.exponentialRampToValueAtTime(240 * Math.pow(2, (v + 2) / 6), t + 0.18)
+      var env = ctx.createGain()
+      env.gain.setValueAtTime(0.0001, t)
+      env.gain.exponentialRampToValueAtTime(0.055, t + 0.008)
+      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.22)
+      osc.connect(env)
+      env.connect(this.master!)
+      osc.start(t)
+      osc.stop(t + 0.24)
+      osc.onended = (function (o, e) {
+        return function () { o.disconnect(); e.disconnect() }
+      })(osc, env)
+    }
+  }
+
   /** Chain Reaction split. */
   split(): void {
     this.blip(760, 0.1, 0.09, 'square', 0, 1180)

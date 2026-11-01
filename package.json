@@ -12,7 +12,9 @@
     "sim": "tsx tools/simulate.ts",
     "smoke": "vite build && node tools/smoke.mjs",
     "upgrades": "tsx tools/upgrades.ts",
-    "dev:lan": "vite --host 0.0.0.0"
+    "dev:lan": "vite --host 0.0.0.0",
+    "propagation": "tsx tools/propagation.ts",
+    "shot": "vite build && node tools/shot.mjs"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",

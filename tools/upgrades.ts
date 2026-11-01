@@ -19,8 +19,9 @@ import { deriveRng, type Rng } from '../src/core/rng'
 import { boardRngFor, generateBoard } from '../src/sim/boardgen'
 import { probeBoard } from '../src/sim/validator'
 import { initPhysics, makeStepEvents, PhysicsWorld } from '../src/sim/physics'
-import { Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
+import { computeLayerBonus, Pass, scoreLanding, scorePin, type ScoringContext } from '../src/sim/scoring'
 import { resolveCriticalStrike } from '../src/sim/effects'
+import { buildSignalGraph, makeSignalResult, propagate } from '../src/sim/propagation'
 import { isAttentionHead, type Board } from '../src/sim/board'
 
 const BOARDS = Number(process.argv[2] ?? 6)
@@ -76,7 +77,15 @@ function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, c
   const tier = TEMPERATURES[TEMP_INDEX]!
   const events = makeStepEvents()
   const pass = new Pass()
-  const ctx: ScoringContext = { mods, tempScoreMult: tier.scoreMult, tempValue: tier.value, rng }
+  const graph = buildSignalGraph(board)
+  const sig = makeSignalResult()
+  const ctx: ScoringContext = {
+    mods,
+    tempScoreMult: tier.scoreMult,
+    tempValue: tier.value,
+    rng,
+    layerBonus: computeLayerBonus(board),
+  }
 
   // Explosive Weights removes pins during a pass; clear that before rebuilding
   // so each measured pass starts from the same board the player would see.
@@ -100,6 +109,7 @@ function runPass(world: PhysicsWorld, board: Board, mods: Mods, angle: number, c
     world.stepOnce(events)
     for (const h of events.pinHits) {
       const ev = scorePin(pass, h.pin, h.orb, ctx)
+      if (ev) propagate(graph, pass, h.pin, ctx, sig)
       // Chain Reaction / Explosive Weights now live in the sim layer, so the
       // harness can finally execute them — they used to read 0% because the
       // implementation sat in core/game.ts, out of reach.

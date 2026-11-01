@@ -16,7 +16,7 @@
  */
 
 import * as THREE from 'three'
-import { LAUNCH, TEMPERATURES, VALIDATOR } from '../config/balance'
+import { LAUNCH, TEMPERATURES, VALIDATOR, VISUAL } from '../config/balance'
 import { deriveRng, mintSeed } from './rng'
 import { RunState, type Phase } from './state'
 import { Launcher } from '../sim/launcher'
@@ -28,15 +28,31 @@ import {
   type StepEvents,
 } from '../sim/physics'
 import {
+  computeLayerBonus,
   Pass,
+  returnsToken,
   scoreLanding,
   scorePin,
+  type EchoPayout,
   type ScoreEvent,
   type ScoringContext,
 } from '../sim/scoring'
 import { generateBoard, boardRngFor } from '../sim/boardgen'
 import { probeBoard } from '../sim/validator'
-import { isAttentionHead, type Board, type NodeDef } from '../sim/board'
+import {
+  isAttentionHead,
+  type Board,
+  type BucketTransform,
+  type NodeDef,
+  type NodeTransform,
+} from '../sim/board'
+import {
+  buildSignalGraph,
+  makeSignalResult,
+  propagate,
+  type SignalGraph,
+  type SignalResult,
+} from '../sim/propagation'
 import { resolveCriticalStrike } from '../sim/effects'
 import { Renderer } from '../render/scene'
 import { BoardView } from '../render/boardView'
@@ -82,6 +98,13 @@ export class Game {
   private passRestitution = 0
   /** Weights detonated during the current pass, restored when the next begins. */
   private detonatedThisPass: NodeDef[] = []
+  /** Edge/node lookup for propagation. Rebuilt whenever the board changes. */
+  private graph: SignalGraph | null = null
+  /** Per-layer Layer Norm bonus. Rebuilt whenever the board changes. */
+  private layerBonus: number[] = []
+  private signal: SignalResult = makeSignalResult()
+  /** Payouts deferred to the next pass by Checkpoint / Cache Hit. */
+  private pendingEchoes: EchoPayout[] = []
   /** Smoothed heat, so the backdrop eases rather than snaps. */
   private displayHeat = 0
 
@@ -147,6 +170,7 @@ export class Game {
     this.board = this.buildRunBoard()
     this.physics.loadBoard(this.board)
     this.boardView.build(this.board)
+    this.rebuildBoardCaches()
 
     this.loadStage()
   }
@@ -217,6 +241,16 @@ export class Game {
     this.boardView.markLabelsDirty()
   }
 
+  /**
+   * Recompute everything derived from board state. Must run after any level,
+   * transform or pruning change, or scoring silently uses a stale network.
+   */
+  private rebuildBoardCaches(): void {
+    if (!this.board) return
+    this.graph = buildSignalGraph(this.board)
+    this.layerBonus = computeLayerBonus(this.board)
+  }
+
   private beginPlay(): void {
     this.audio.unlock()
     this.audio.uiConfirm()
@@ -254,6 +288,23 @@ export class Game {
     this.restoreDetonated()
     if (this.board) this.boardView.resetPass(this.board)
 
+    // Checkpoint and Cache Hit defer part of their payout to the next pass.
+    // Banking it here rather than at the end of the previous one means the
+    // player sees it land during play instead of inside a results screen.
+    if (this.pendingEchoes.length > 0) {
+      for (const echo of this.pendingEchoes) {
+        this.pass.score += echo.points
+        this.emitPopup({
+          points: echo.points,
+          x: echo.x,
+          y: echo.y,
+          kind: 'echo',
+          tierMult: 1,
+        })
+      }
+      this.pendingEchoes.length = 0
+    }
+
     this.passHeat = heatOf(spec.tier.value)
     this.passRestitution = spec.restitution
 
@@ -273,6 +324,38 @@ export class Game {
     this.run.phase = 'resolving'
     this.launcher.enabled = false
     this.syncHud()
+  }
+
+  /**
+   * Run the forward pass from a contact and present it. Edge flashes and score
+   * popups are staggered BY HOP so the player sees a wave travelling down the
+   * network rather than the whole subtree lighting in a single frame — the
+   * propagation itself is instantaneous and already scored.
+   */
+  private fireSignal(origin: NodeDef, ctx: ScoringContext): void {
+    if (!this.graph) return
+    propagate(this.graph, this.pass, origin, ctx, this.signal)
+    if (this.signal.reached === 0) return
+
+    for (const lit of this.signal.litEdges) {
+      window.setTimeout(
+        () => this.boardView.flashEdge(lit.index),
+        lit.hop * VISUAL.signalHopMs,
+      )
+    }
+
+    for (const ev of this.signal.events) {
+      const hop = ev.hop ?? 1
+      window.setTimeout(() => {
+        const node = ev.nodeId === undefined ? undefined : this.graph?.nodes.get(ev.nodeId)
+        if (node) this.boardView.strike(node)
+        if (ev.points > 0) this.emitPopup(ev)
+      }, hop * VISUAL.signalHopMs)
+      this.run.totals.pinsStruck++
+    }
+
+    if (this.signal.reached >= 8) this.renderer.punch(0.3)
+    this.audio.signal(this.signal.reached)
   }
 
   /** Explosive Weights only damages the board for the duration of one pass. */
@@ -312,9 +395,10 @@ export class Game {
       mods: this.run.mods,
       tempScoreMult: this.launcher.tier.scoreMult,
       tempValue: this.launcher.tier.value,
+      layerBonus: this.layerBonus,
       rng: deriveRng(
         this.run.seed,
-        'hallucinate',
+        'roll',
         this.run.stage,
         this.run.totals.passesFired,
         this.pass.struck.size,
@@ -342,12 +426,29 @@ export class Game {
       else this.audio.pinTick(this.pass.chain, this.passHeat)
 
       if (isAttentionHead(hit.pin)) this.resolveCritical(hit.pin, hit.orb, ctx)
+
+      // The contact scored; now the network carries it downward.
+      this.fireSignal(hit.pin, ctx)
     }
 
     // --- pocket landings ---
     for (const landing of this.events.landings) {
       const ev = scoreLanding(this.pass, landing.pocket, landing.orb, ctx)
       this.orbView.release(landing.orb.id)
+
+      // Beam Search returns the token to the launcher for a free relaunch.
+      if (returnsToken(landing.pocket) && this.physics.orbCount < LAUNCH.maxOrbsHardCap) {
+        const relaunch = this.physics.spawnOrb(
+          landing.pocket.x * 0.3,
+          LAUNCH.originY - 0.5,
+          0,
+          -LAUNCH.minSpeed,
+          { restitution: this.passRestitution, launchId: landing.orb.launchId, scoreScale: landing.orb.scoreScale },
+        )
+        this.orbView.acquire(relaunch)
+        this.hud.flash('BEAM SEARCH', 'var(--lime)')
+        this.audio.uiConfirm()
+      }
 
       if (landing.pocket.kind === 'spike') {
         this.run.totals.spikesHit++
@@ -410,6 +511,7 @@ export class Game {
 
   /** Called once the last token of a pass has left the board. */
   private finishPass(): void {
+    this.pendingEchoes = this.pass.echoes.slice()
     this.run.commitPass(this.pass.score)
     const next: Phase = this.run.resolveAfterPass()
     this.pass.reset()
@@ -496,6 +598,12 @@ export class Game {
     if (this.run.phase === 'resolving') {
       this.physics.advance(dt, this.events)
       this.handleEvents()
+      // An EOS bucket terminates the pass wherever the other tokens are.
+      if (this.pass.ended && this.physics.orbCount > 0) {
+        this.physics.despawnAllOrbs()
+        this.orbView.releaseAll()
+        this.hud.flash('EOS', 'var(--amber)')
+      }
       if (this.physics.orbCount === 0) this.finishPass()
     }
 
@@ -675,6 +783,69 @@ export class Game {
     const url = new URL(window.location.href)
     url.searchParams.set('seed', seed)
     window.history.replaceState({}, '', url)
+  }
+
+  /**
+   * Console API for exercising Pass 2 before the shop exists.
+   *
+   *   game.debug.level(3)               raise every node to L3
+   *   game.debug.levelOne(12, 5)        node 12 to L5
+   *   game.debug.transform(12, 'gelu')  grant a transform
+   *   game.debug.scatter('gelu', 6)     grant one to 6 random nodes
+   *   game.debug.bucket(0, 4, 'top-k')  bucket 0 to L4 with a transform
+   *   game.debug.report()               what the board currently holds
+   */
+  get debug() {
+    const refresh = () => {
+      if (!this.board) return
+      this.rebuildBoardCaches()
+      this.boardView.build(this.board)
+      this.physics.loadBoard(this.board)
+    }
+    return {
+      level: (n: number) => {
+        for (const node of this.board?.nodes ?? []) node.level = n
+        refresh()
+      },
+      levelOne: (id: number, n: number) => {
+        const node = this.board?.nodes.find((x) => x.id === id)
+        if (node) node.level = n
+        refresh()
+      },
+      transform: (id: number, t: NodeTransform) => {
+        const node = this.board?.nodes.find((x) => x.id === id)
+        if (node && !node.transforms.includes(t)) node.transforms.push(t)
+        refresh()
+      },
+      scatter: (t: NodeTransform, count: number) => {
+        const pool = (this.board?.nodes ?? []).filter((n) => !n.removed && !n.transforms.includes(t))
+        const rng = deriveRng(this.run.seed, 'debug-scatter', t, count)
+        for (const n of rng.sample(pool, count)) n.transforms.push(t)
+        refresh()
+      },
+      bucket: (id: number, level: number, t?: BucketTransform) => {
+        const p = this.board?.pockets.find((x) => x.id === id)
+        if (!p) return
+        p.level = level
+        if (t) p.transform = t
+        refresh()
+      },
+      report: () => {
+        const b = this.board
+        if (!b) return 'no board'
+        const byTransform = new Map<string, number>()
+        for (const n of b.nodes) {
+          for (const t of n.transforms) byTransform.set(t, (byTransform.get(t) ?? 0) + 1)
+        }
+        return {
+          nodes: b.nodes.filter((n) => !n.removed).length,
+          edges: b.edges.length,
+          avgLevel: b.nodes.reduce((a, n) => a + n.level, 0) / b.nodes.length,
+          transforms: Object.fromEntries(byTransform),
+          buckets: b.pockets.map((p) => `${p.kind} L${p.level}${p.transform ? ' ' + p.transform : ''}`),
+        }
+      },
+    }
   }
 
   dispose(): void {
