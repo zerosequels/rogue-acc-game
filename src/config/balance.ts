@@ -386,9 +386,9 @@ export const VALIDATOR = {
 // ---------------------------------------------------------------------------
 
 export const VISUAL = {
-  bloomStrength: 0.42,
-  bloomRadius: 0.42,
-  bloomThreshold: 0.33,
+  bloomStrength: 0.50,
+  bloomRadius: 0.55,
+  bloomThreshold: 0.24,
   /** Extra bloom at max temperature. */
   bloomTempBoost: 0.3,
   /**
@@ -402,7 +402,56 @@ export const VISUAL = {
   /** Signal pulses are briefer than contact flashes — they are a bonus
    *  passing through, not a weight being consumed. */
   signalFlashSeconds: 0.26,
-  /** Wall thickness of a node ring, in world units. Thin reads as schematic. */
+  // --- holographic shells -------------------------------------------------
+  // Nothing in the chamber is lit; every surface emits. Brightness is an
+  // ENERGY scalar per instance, summed from rest + proximity + events.
+
+  /** Sphere tessellation. Dense enough that no facet is ever visible — the
+   *  wireframe is drawn in the shader, not made of these triangles. */
+  shellSegments: 40,
+  shellRings: 26,
+  /** Shell radius as a fraction of the physics collider. Deliberately UNDER
+   *  1: additive shells accumulate, and a shell drawn larger than its
+   *  collider would make passable gaps look blocked. */
+  shellScale: 0.92,
+  headScale: 0.95,
+
+  /** Energy contributions, summed per node per frame. */
+  restEnergy: 0.15,
+  proximityEnergy: 1.25,
+  strikeEnergy: 2.4,
+  signalEnergy: 1.5,
+  spentEnergy: 0.10,
+  inertEnergy: 0.10,
+  /** World units over which a token excites the shells around it. */
+  proximityRadius: 5.0,
+
+  /** Procedural grid density, rising with level — the third channel level
+   *  reads on, alongside scale and nested shell count. */
+  gridBase: 2.5,
+  gridPerLevel: 0.4,
+  /** A nested inner shell appears every N levels, up to the cap. */
+  levelsPerShell: 4,
+  maxInnerShells: 2,
+
+  /** Conduits and the beads that ride them. */
+  conduitRadius: 0.028,
+  conduitRest: 0.22,
+  conduitLit: 2.2,
+  beadRadius: 0.11,
+  beadSpeed: 2.6,
+
+  /** Token: a hard plasma core inside a wider wireframe shell. */
+  tokenCoreEnergy: 2.6,
+  tokenShellEnergy: 1.0,
+  tokenGrid: 5,
+
+  /** Depth of the output-token wells, in world units. */
+  bucketDepth: 0.55,
+  /** Z of the glyph label plane — in front of every shell. */
+  labelZ: 0.6,
+
+  /** Legacy, from the flat ring pass. Unused by the holographic renderer. */
   ringThickness: 0.062,
   /** Edge brightness at rest, as a fraction of full. Must stay faint: 70 nodes
    *  of edges at any real brightness becomes a bright haze, not a diagram. */
@@ -422,6 +471,10 @@ export const VISUAL = {
   cameraPadTop: 2.8,
   /** Clearance below the board floor, so the pockets are never clipped. */
   cameraPadBottom: 2.6,
+  /** Camera tilt in degrees. Small and fixed: enough to see the tops and
+   *  near sides of every shell, not enough to disturb aim. The projection
+   *  stays orthographic, so where a thing appears is still where it is. */
+  cameraTilt: 9,
   /** Peak camera shake, in world units. Past ~0.5 it reads as nausea, not impact. */
   shakeMax: 0.34,
   /** World units of shake added per unit of renderer.punch(). */
@@ -432,8 +485,8 @@ export const VISUAL = {
 
 export const COLORS = {
   bg: 0x04060b,
-  pin: 0x4e9ad4,
-  pinLit: 0x35e4ff,
+  pin: 0x3ec6ff,
+  pinLit: 0x8af2ff,
   pinSpent: 0x22435f,
   critical: 0xffa21f,
   criticalLit: 0xfff0c0,

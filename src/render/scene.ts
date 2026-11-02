@@ -104,6 +104,12 @@ const GlitchShader = {
   `,
 }
 
+const PROJ = new THREE.Vector3()
+const NDC = new THREE.Vector2()
+const RAY = new THREE.Raycaster()
+const PLANE = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+const HIT = new THREE.Vector3()
+
 export class Renderer {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.OrthographicCamera
@@ -135,8 +141,13 @@ export class Renderer {
     // offset -- the scene rendered a world unit high and worldToScreen (which
     // reads camera.top as an absolute coord) disagreed with the render, so
     // score popups appeared ~37px away from the weight that produced them.
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100)
-    this.camera.position.set(0, 0, 20)
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -60, 120)
+    // Orthographic with a small fixed tilt. Parallel projection keeps aim
+    // truthful — a gap at the rail is exactly where it looks — while the tilt
+    // reveals the tops and near sides of every shell, which is all the
+    // dimensionality the read needs. Depth comes from shading, not projection.
+    const tilt = (VISUAL.cameraTilt * Math.PI) / 180
+    this.camera.position.set(0, Math.sin(tilt) * 20, Math.cos(tilt) * 20)
     this.camera.lookAt(0, 0, 0)
 
     this.renderer = new THREE.WebGLRenderer({
@@ -216,20 +227,21 @@ export class Renderer {
 
   /** Project a world XY on the z=0 plane to client pixel coordinates. */
   worldToScreen(x: number, y: number): { x: number; y: number } {
-    const rect = this.renderer.domElement.getBoundingClientRect()
-    const u = (x - this.camera.left) / this.viewWidth
-    const v = (this.camera.top - y) / this.viewHeight
-    return { x: rect.left + u * rect.width, y: rect.top + v * rect.height }
+    return this.projectExact(x, y)
   }
 
-  /** Convert a client-space pointer position to world XY on the z=0 plane. */
+  /**
+   * Client pointer -> world XY on the z=0 plane. Raycast rather than remap:
+   * with the camera tilted, the naive inverse is wrong by the tilt, and aim
+   * would not follow the cursor.
+   */
   screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
     const rect = this.renderer.domElement.getBoundingClientRect()
-    const nx = ((clientX - rect.left) / rect.width) * 2 - 1
-    const ny = -(((clientY - rect.top) / rect.height) * 2 - 1)
-    const x = nx * (this.camera.right - this.camera.left) / 2
-    const y = VIEW_CY + ny * (this.camera.top - this.camera.bottom) / 2
-    return { x, y }
+    NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1
+    NDC.y = -(((clientY - rect.top) / rect.height) * 2 - 1)
+    RAY.setFromCamera(NDC, this.camera)
+    const hit = RAY.ray.intersectPlane(PLANE, HIT)
+    return hit ? { x: hit.x, y: hit.y } : { x: 0, y: VIEW_CY }
   }
 
   /**
@@ -253,6 +265,22 @@ export class Renderer {
     this.camera.top = this.frustum.top + dy
     this.camera.bottom = this.frustum.bottom + dy
     this.camera.updateProjectionMatrix()
+  }
+
+  /**
+   * Project a world XY on the z=0 plane to client pixels.
+   *
+   * The camera is tilted, so the frustum rectangle is no longer the world
+   * rectangle — a point's screen position must go through the real projection
+   * rather than a flat remap, or every DOM score popup drifts off its weight.
+   */
+  private projectExact(x: number, y: number): { x: number; y: number } {
+    PROJ.set(x, y, 0).project(this.camera)
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    return {
+      x: rect.left + (PROJ.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-PROJ.y * 0.5 + 0.5) * rect.height,
+    }
   }
 
   render(dt = 1 / 60): void {

@@ -167,6 +167,61 @@ gone (the surviving `Mods` bag is `src/config/mods.ts`).
 
 ---
 
+## R1 — Holographic volume (graphics overhaul)
+
+Proposal: https://claude.ai/code/artifact/3f1ad8fd-9c46-487d-80fe-88c272f8736c
+
+Direction: keep the neon, give it volume. **Nothing in the chamber is lit —
+every surface emits.** Flat rings became dense spheres; the wireframe moved
+from geometry into the shader.
+
+- [x] `render/shell.ts` — one emissive material for every solid
+- [x] Dense sphere geometry (40x26). No visible facet anywhere
+- [x] Procedural geodesic grid drawn from the surface NORMAL, not topology
+- [x] Fresnel rim + object-space scan sweep
+- [x] Proximity excitation: shell energy from distance to tokens in flight
+- [x] Attention heads as faceted amber crystals (octahedra, grid disabled)
+- [x] Nested inner shells for levelled weights
+- [x] Edges as instanced cylinder conduits with travelling beads
+- [x] Tokens as plasma core inside a wireframe shell
+- [x] Output tokens as 3D wells with depth
+- [x] Orthographic camera with a 9-degree tilt
+- [x] `worldToScreen` / `screenToWorld` corrected for the tilt
+- [x] `npm run smoke` green through 12 benchmarks with shop purchases
+
+**Mechanics untouched, verified by diff.** Only `render/`, the `VISUAL` and
+`COLORS` blocks, and two render calls in the frame loop changed. `src/sim/**`
+has zero modifications and never reads a presentation constant, so every
+harness result still stands.
+
+**R1 notes**
+
+- The grid is drawn from the normal rather than from mesh topology. That is
+  what lets the mesh be smooth and dense while the wireframe stays crisp —
+  and it makes grid density a free per-instance channel, which is how level
+  is encoded alongside scale and shell count.
+- Tuning the pitch demos did not transfer. A node is ~11px on screen in the
+  real game against ~90px in the pitch, so the grid had to drop from 6
+  divisions to 2.5 and the rim had to tighten from power 1.7 to 2.9 before
+  anything read. Scale is a tuning input, not a detail.
+- Additive shells accumulate, so resting energy had to come **down** (0.46 to
+  0.15) or 68 overlapping shells wash the playfield into haze.
+- Shells are drawn at 0.92 of their collider radius, deliberately UNDER 1.
+  An additive shell larger than its collider makes passable gaps look blocked.
+- The camera tilt broke both projection helpers. `worldToScreen` now goes
+  through the real projection matrix and `screenToWorld` raycasts a plane;
+  the previous flat remaps were wrong by the tilt, which would have drifted
+  every score popup off its weight and desynced mouse aim.
+
+### Not yet done (R2 / R3 from the proposal)
+
+- [ ] Ghost lattices receding into depth
+- [ ] Haze, floor grid, depth of field
+- [ ] Event choreography: shell squash, dolly punch, ghost echo
+- [ ] Per-effect quality flags
+
+---
+
 ## Standing rules
 
 - `src/config/balance.ts` stays the only file with gameplay constants.

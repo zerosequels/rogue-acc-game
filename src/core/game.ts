@@ -578,7 +578,10 @@ export class Game {
     this.renderer.heat = this.displayHeat
     this.background.update(t, this.displayHeat)
 
-    if (this.board) this.boardView.update(dt, this.board)
+    // Pass the in-flight tokens so the board can compute proximity
+    // excitation — the hologram's answer to a carried light.
+    if (this.board) this.boardView.update(dt, this.board, this.physics?.orbs ?? [])
+    this.orbView.tick(t)
     this.orbView.update(this.physics?.orbs ?? [], this.displayHeat)
     this.orbView.updateLauncher(
       this.launcher.angle, this.launcher.charge,

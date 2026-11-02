@@ -13,9 +13,39 @@
 import * as THREE from 'three'
 import { COLORS, LAUNCH, ORB, VISUAL } from '../config/balance'
 import type { OrbHandle } from '../sim/physics'
+import { makeShellMaterial, prepareInstanced } from './shell'
+
+/**
+ * A single-instance mesh on the shell material. Tokens are few, but routing
+ * them through the same instanced path as the board means one shader, one set
+ * of per-object channels, and no second code path to keep in sync.
+ */
+interface Single {
+  mesh: THREE.InstancedMesh
+  col: THREE.InstancedBufferAttribute
+  param: THREE.InstancedBufferAttribute
+}
+
+function makeSingle(geo: THREE.BufferGeometry, mat: THREE.Material): Single {
+  const { col, param } = prepareInstanced(geo, 1)
+  const mesh = new THREE.InstancedMesh(geo, mat, 1)
+  mesh.frustumCulled = false
+  const m = new THREE.Matrix4()
+  mesh.setMatrixAt(0, m)
+  mesh.instanceMatrix.needsUpdate = true
+  return { mesh, col, param }
+}
+
+function setSingle(s: Single, colour: THREE.Color, energy: number, gridLat: number, gridLon: number): void {
+  s.col.setXYZ(0, colour.r, colour.g, colour.b)
+  s.param.setXYZW(0, energy, gridLat, gridLon, 0)
+  s.col.needsUpdate = true
+  s.param.needsUpdate = true
+}
 
 interface OrbVisual {
-  mesh: THREE.Mesh
+  core: Single
+  shell: Single
   line: THREE.Line
   positions: Float32Array
   colors: Float32Array
@@ -26,6 +56,9 @@ interface OrbVisual {
 }
 
 const TRAIL = VISUAL.trailLength
+const COOL = new THREE.Color(COLORS.orb)
+const HOT = new THREE.Color(COLORS.orbHot)
+const BARREL_COL = new THREE.Color()
 
 export class OrbView {
   readonly group = new THREE.Group()
@@ -34,34 +67,36 @@ export class OrbView {
   private disposables: (THREE.BufferGeometry | THREE.Material)[] = []
 
   // launcher visuals
-  private barrel: THREE.Mesh
+  private barrel!: Single
+  private barrelMat!: THREE.ShaderMaterial
   private aimLine: THREE.Line
   private aimPositions: Float32Array
   private predictLine: THREE.Line
   private predictPositions: Float32Array
 
   constructor() {
-    const orbGeo = new THREE.CircleGeometry(ORB.radius, 14)
-    const haloGeo = new THREE.CircleGeometry(ORB.radius * 2.4, 14)
-    this.disposables.push(orbGeo, haloGeo)
+    // A token is two concentric emissive bodies: a hard plasma core and a
+    // wider wireframe shell. The core is what the eye tracks; the shell is
+    // what makes it read as a volume rather than a dot.
+    const coreGeo = new THREE.SphereGeometry(ORB.radius * 0.45, 16, 12)
+    const shellGeo = new THREE.SphereGeometry(ORB.radius * 1.15, 28, 20)
+    this.disposables.push(coreGeo, shellGeo)
 
     for (let i = 0; i < LAUNCH.maxOrbsHardCap; i++) {
-      const mat = new THREE.MeshBasicMaterial({ color: COLORS.orb, toneMapped: false })
-      const haloMat = new THREE.MeshBasicMaterial({
-        color: COLORS.orb,
-        transparent: true,
-        opacity: 0.2,
-        toneMapped: false,
-      })
-      this.disposables.push(mat, haloMat)
+      const coreMat = makeShellMaterial({ rimGain: 2.4, gridGain: 0, floor: 1.4 })
+      const shellMat = makeShellMaterial({ rimPower: 1.5, rimGain: 1.5, gridGain: 0.7 })
+      this.disposables.push(coreMat, shellMat)
 
-      const mesh = new THREE.Mesh(orbGeo, mat)
-      const halo = new THREE.Mesh(haloGeo, haloMat)
-      halo.position.z = -0.01
-      mesh.add(halo)
-      mesh.visible = false
-      mesh.position.z = 0.2
-      this.group.add(mesh)
+      // One instance each: the shell shader reads per-instance attributes, so
+      // even a single token goes through the same path as the board.
+      const core = makeSingle(coreGeo.clone(), coreMat)
+      const shell = makeSingle(shellGeo.clone(), shellMat)
+      this.disposables.push(core.mesh.geometry, shell.mesh.geometry)
+      core.mesh.visible = false
+      shell.mesh.visible = false
+      core.mesh.position.z = 0.22
+      shell.mesh.position.z = 0.2
+      this.group.add(shell.mesh, core.mesh)
 
       const positions = new Float32Array(TRAIL * 3)
       const colors = new Float32Array(TRAIL * 3)
@@ -69,10 +104,8 @@ export class OrbView {
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
       const lineMat = new THREE.LineBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.9,
-        toneMapped: false,
+        vertexColors: true, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
       })
       this.disposables.push(geo, lineMat)
       const line = new THREE.Line(geo, lineMat)
@@ -81,28 +114,28 @@ export class OrbView {
       line.frustumCulled = false
       this.group.add(line)
 
-      this.pool.push({ mesh, line, positions, colors, history: [], inUse: false, orbId: -1 })
+      this.pool.push({
+        core, shell, line, positions, colors,
+        history: [], inUse: false, orbId: -1,
+      })
     }
 
-    // --- launcher barrel ---
-    const barrelGeo = new THREE.PlaneGeometry(0.22, 2.2)
-    const barrelMat = new THREE.MeshBasicMaterial({ color: COLORS.pinLit, toneMapped: false })
-    this.disposables.push(barrelGeo, barrelMat)
-    this.barrel = new THREE.Mesh(barrelGeo, barrelMat)
-    this.barrel.position.set(0, LAUNCH.originY, 0.1)
-    this.group.add(this.barrel)
+    // --- launcher barrel: an emissive conduit ---
+    const barrelGeo = new THREE.CylinderGeometry(0.10, 0.10, 2.0, 8, 1, true)
+    this.barrelMat = makeShellMaterial({ rimGain: 1.9, gridGain: 0, floor: 0.5 })
+    this.disposables.push(barrelGeo, this.barrelMat)
+    this.barrel = makeSingle(barrelGeo, this.barrelMat)
+    this.barrel.mesh.position.set(0, LAUNCH.originY, 0.1)
+    this.group.add(this.barrel.mesh)
 
     // --- straight aim guide ---
     this.aimPositions = new Float32Array(2 * 3)
     const aimGeo = new THREE.BufferGeometry()
     aimGeo.setAttribute('position', new THREE.BufferAttribute(this.aimPositions, 3))
     const aimMat = new THREE.LineDashedMaterial({
-      color: COLORS.pinLit,
-      dashSize: 0.3,
-      gapSize: 0.25,
-      transparent: true,
-      opacity: 0.45,
-      toneMapped: false,
+      color: COLORS.pinLit, dashSize: 0.3, gapSize: 0.25,
+      transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
     })
     this.disposables.push(aimGeo, aimMat)
     this.aimLine = new THREE.Line(aimGeo, aimMat)
@@ -117,10 +150,8 @@ export class OrbView {
     pGeo.setAttribute('position', new THREE.BufferAttribute(this.predictPositions, 3))
     pGeo.setDrawRange(0, 0)
     const pMat = new THREE.LineBasicMaterial({
-      color: COLORS.critical,
-      transparent: true,
-      opacity: 0.5,
-      toneMapped: false,
+      color: COLORS.critical, transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
     })
     this.disposables.push(pGeo, pMat)
     this.predictLine = new THREE.Line(pGeo, pMat)
@@ -136,9 +167,11 @@ export class OrbView {
     slot.inUse = true
     slot.orbId = orb.id
     slot.history = [orb.x, orb.y]
-    slot.mesh.visible = true
+    slot.core.mesh.visible = true
+    slot.shell.mesh.visible = true
     slot.line.visible = true
-    slot.mesh.position.set(orb.x, orb.y, 0.2)
+    slot.core.mesh.position.set(orb.x, orb.y, 0.22)
+    slot.shell.mesh.position.set(orb.x, orb.y, 0.2)
     this.byOrb.set(orb.id, slot)
   }
 
@@ -147,7 +180,8 @@ export class OrbView {
     if (!slot) return
     slot.inUse = false
     slot.orbId = -1
-    slot.mesh.visible = false
+    slot.core.mesh.visible = false
+    slot.shell.mesh.visible = false
     slot.line.visible = false
     slot.history = []
     this.byOrb.delete(orbId)
@@ -158,13 +192,12 @@ export class OrbView {
   }
 
   /**
-   * Sync visuals to sim state. `heat` (0..1) shifts orb colour from lime toward
-   * magenta so a Rogue-temperature token is visually unmistakable.
+   * Sync visuals to sim state. `heat` shifts the token toward magenta as a
+   * pass works harder, and speed drives both the shell's grid density and the
+   * core's energy — a fast token is visibly more excited.
    */
   update(orbs: readonly OrbHandle[], heat: number): void {
-    const hot = new THREE.Color(COLORS.orbHot)
-    const cool = new THREE.Color(COLORS.orb)
-    const tint = cool.clone().lerp(hot, heat)
+    const tint = COOL.clone().lerp(HOT, heat)
 
     for (const orb of orbs) {
       let slot = this.byOrb.get(orb.id)
@@ -174,20 +207,17 @@ export class OrbView {
         if (!slot) continue
       }
 
-      slot.mesh.position.set(orb.x, orb.y, 0.2)
-      const mat = slot.mesh.material as THREE.MeshBasicMaterial
-      mat.color.copy(tint)
-      const halo = slot.mesh.children[0] as THREE.Mesh | undefined
-      if (halo) {
-        const hm = halo.material as THREE.MeshBasicMaterial
-        hm.color.copy(tint)
-        // Halo swells with speed: fast tokens look energetic.
-        const speed = Math.hypot(orb.vx, orb.vy) / ORB.maxSpeed
-        halo.scale.setScalar(0.7 + speed * 0.8)
-        hm.opacity = 0.12 + speed * 0.22
-      }
+      slot.core.mesh.position.set(orb.x, orb.y, 0.22)
+      slot.shell.mesh.position.set(orb.x, orb.y, 0.2)
 
-      // --- trail ---
+      const speed = Math.min(1, Math.hypot(orb.vx, orb.vy) / ORB.maxSpeed)
+      setSingle(slot.core, tint, VISUAL.tokenCoreEnergy + speed * 1.6, 0, 0)
+      setSingle(
+        slot.shell, tint,
+        VISUAL.tokenShellEnergy + speed * 0.5,
+        VISUAL.tokenGrid, VISUAL.tokenGrid * 1.4,
+      )
+
       slot.history.push(orb.x, orb.y)
       const maxLen = TRAIL * 2
       if (slot.history.length > maxLen) {
@@ -206,7 +236,6 @@ export class OrbView {
       slot.positions[i * 3] = x
       slot.positions[i * 3 + 1] = y
       slot.positions[i * 3 + 2] = 0
-      // Fade toward the tail; newest sample is full brightness.
       const a = pts <= 1 ? 1 : i / (pts - 1)
       const f = a * a
       slot.colors[i * 3] = tint.r * f
@@ -225,17 +254,20 @@ export class OrbView {
     predicted: readonly { x: number; y: number }[],
     visible: boolean,
   ): void {
-    this.barrel.visible = visible
+    this.barrel.mesh.visible = visible
     this.aimLine.visible = visible
     this.predictLine.visible = visible && predicted.length > 1
 
     if (!visible) return
 
-    this.barrel.rotation.z = -angle
-    this.barrel.position.set(Math.sin(angle) * 0.9, LAUNCH.originY - Math.cos(angle) * 0.9, 0.1)
-    const bm = this.barrel.material as THREE.MeshBasicMaterial
-    bm.color.setHex(COLORS.pinLit).lerp(new THREE.Color(COLORS.orbHot), charge)
-    this.barrel.scale.set(1 + charge * 0.5, 1, 1)
+    this.barrel.mesh.rotation.z = -angle
+    this.barrel.mesh.position.set(
+      Math.sin(angle) * 1.0, LAUNCH.originY - Math.cos(angle) * 1.0, 0.1,
+    )
+    // The barrel charges visibly: energy and width both climb with the pull.
+    BARREL_COL.setHex(COLORS.pinLit).lerp(HOT, charge)
+    setSingle(this.barrel, BARREL_COL, 0.7 + charge * 2.4, 0, 0)
+    this.barrel.mesh.scale.set(1 + charge * 0.45, 1, 1 + charge * 0.45)
 
     // Aim guide: short dashed ray from the muzzle.
     const len = 2.6 + charge * 2.4
@@ -267,5 +299,14 @@ export class OrbView {
   dispose(): void {
     for (const d of this.disposables) d.dispose()
     this.disposables = []
+  }
+
+  /** Advance the shared shader clock for every token material. */
+  tick(time: number): void {
+    for (const p of this.pool) {
+      ;(p.core.mesh.material as THREE.ShaderMaterial).uniforms.uTime!.value = time
+      ;(p.shell.mesh.material as THREE.ShaderMaterial).uniforms.uTime!.value = time
+    }
+    this.barrelMat.uniforms.uTime!.value = time
   }
 }
