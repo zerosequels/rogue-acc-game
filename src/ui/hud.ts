@@ -67,6 +67,7 @@ export class Hud {
   private launchVal = el('launch-val')
   private signalVal = el('signal-val')
   private popups = el('popups')
+  private telemetry = el('telemetry')
   private seedTxt = el('seed-txt')
   private muteBtn = el('mute-btn')
   private hintEl = el('help-hint')
@@ -266,7 +267,49 @@ export class Hud {
     window.setTimeout(() => node.remove(), 1000)
   }
 
-  clearPopups(): void { this.popups.replaceChildren() }
+  clearPopups(): void {
+    this.popups.replaceChildren()
+    this.telemetry.replaceChildren()
+    this.track = null
+  }
+
+  // -------------------------------------------------------------------------
+  // Diegetic telemetry
+  //
+  // Readouts that sit ON the board and follow what they describe. A HUD panel
+  // tells you a number; a coordinate lock riding the token tells you the
+  // machine is watching it.
+  // -------------------------------------------------------------------------
+
+  private track: HTMLElement | null = null
+
+  /** Persistent readout pinned to the token in flight. */
+  trackToken(screenX: number, screenY: number, label: string): void {
+    if (!this.track) {
+      this.track = document.createElement('div')
+      this.track.className = 'tele track'
+      this.telemetry.append(this.track)
+    }
+    this.track.style.left = `${screenX + 16}px`
+    this.track.style.top = `${screenY - 6}px`
+    this.track.textContent = label
+  }
+
+  hideTrack(): void {
+    this.track?.remove()
+    this.track = null
+  }
+
+  /** One-shot lock readout, e.g. when an attention head is struck. */
+  lock(screenX: number, screenY: number, label: string): void {
+    const node = document.createElement('div')
+    node.className = 'tele lock fade'
+    node.style.left = `${screenX + 14}px`
+    node.style.top = `${screenY - 2}px`
+    node.textContent = label
+    this.telemetry.append(node)
+    window.setTimeout(() => node.remove(), 1200)
+  }
 
   invalidate(): void {
     this.last = {

@@ -213,11 +213,66 @@ harness result still stands.
   the previous flat remaps were wrong by the tilt, which would have drifted
   every score popup off its weight and desynced mouse aim.
 
-### Not yet done (R2 / R3 from the proposal)
+## R2 — Reference-art lessons + dense lattice
+
+Three pieces of reference art drove this pass (Yann Le Gall, matharium,
+erwanrenders). The thread all three share: **structure stays thin and
+neutral, energy concentrates at POINTS**, and every one of them has grain.
+
+- [x] **Point emission.** Shells gained a tight `core` term. A uniformly
+      glowing sphere washes out when 175 overlap; a hot centre inside a thin
+      rim stays legible at seven pixels.
+- [x] **Spectral dispersion.** The old monochrome chromatic split became a
+      luminance-weighted RGB fringe with a second wide tap, so only hot
+      things go prismatic and the substrate stays neutral.
+- [x] **Ordered dither + film grain.** 4x4 Bayer plus animated noise. Gives
+      the phosphor character and kills the banding additive blending leaves
+      in dark areas.
+- [x] **Tapering comet trails.** Trail length 26 -> 64, cubic falloff, plus
+      ten shrinking echo shells behind the core. A line cannot narrow, so the
+      taper had to be geometry.
+- [x] **Instrument chrome** (`render/chrome.ts`): corner brackets,
+      coordinate ticks with major/minor scale, dashed registration circle,
+      slow scan sweep. Two draw calls, nothing per frame.
+- [x] **Diegetic telemetry**: a coordinate lock riding the token
+      (`x -6.2 y 8.2 v 13`) and `LOCK ATTN_034` when a head is struck.
+- [x] **Shop UI on the same system**: corner brackets, telemetry channel
+      slugs, spectral fringe on display type, shared grain and scanline
+      surface via an inline SVG data URI (bundle stays asset-free).
+
+### Denser lattice (mechanics)
+
+- [x] Weights 0.30 -> 0.19 radius, tokens 0.25 -> 0.155
+- [x] Lattice 9x8 (68 nodes) -> 14x13 (175 nodes)
+- [x] `basePinValue` 10 -> 4, `criticalPinValue` 35 -> 14
+- [x] `ORB.maxSpeed` 40 -> 30: at the smaller radii a 1/120 step moved 0.33
+      units against a combined radius of 0.345, close enough to tunnel if CCD
+      ever missed
+- [x] Rebalanced and verified: **6.3% unskilled IPO rate, median reach
+      benchmark 13 of 24, pace holding 4-9 passes across the whole curve** —
+      flatter than the sparse board ever managed
+
+**The bug that recurred, and the fix that ends it**
+
+Tripling the node count silently broke shop reach for the second time.
+Absolute counts meant "+1 level to 10 weights" fell from 14.7% of the board
+to 5.7%, and every run died at Pre-Seed. Shop counts are now scaled by
+`board.nodes.length / SHOP.referenceNodes` at purchase time, and the card
+quotes the real resolved number ("+2 level to 41 weights"). Board density can
+now change freely without re-tuning the catalogue.
+
+Also found: the opener was the real killer at `baseTarget` 1500 — six passes
+out of ten activations leaves no room for a bad pass, and half the runs died
+on benchmark 0. The first benchmark is an on-ramp; difficulty is carried by
+growth.
+
+### Not yet done (R3 from the proposal)
 
 - [ ] Ghost lattices receding into depth
-- [ ] Haze, floor grid, depth of field
-- [ ] Event choreography: shell squash, dolly punch, ghost echo
+- [ ] Depth of field focused on the play plane
+- [ ] Event choreography: shell squash, ghost echo
+- [ ] Picture-in-picture zoom inset (the one reference idea not yet taken —
+      it is also the only one that would make per-node detail readable)
 - [ ] Per-effect quality flags
 
 ---

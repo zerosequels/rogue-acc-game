@@ -46,6 +46,8 @@ function setSingle(s: Single, colour: THREE.Color, energy: number, gridLat: numb
 interface OrbVisual {
   core: Single
   shell: Single
+  /** Comet echoes strung down the trail, newest first. */
+  echoes: Single[]
   line: THREE.Line
   positions: Float32Array
   colors: Float32Array
@@ -114,8 +116,23 @@ export class OrbView {
       line.frustumCulled = false
       this.group.add(line)
 
+      // LESSON 4 (matharium): motion history IS the image. A line cannot
+      // taper in width, so the trail gets a string of shrinking echo shells
+      // behind the core — the comet read, for ten extra instances.
+      const echoes: Single[] = []
+      for (let e = 0; e < VISUAL.trailEchoes; e++) {
+        const em = makeShellMaterial({ rimGain: 1.3, gridGain: 0, floor: 0.5, coreGain: 1.1 })
+        this.disposables.push(em)
+        const echo = makeSingle(shellGeo.clone(), em)
+        this.disposables.push(echo.mesh.geometry)
+        echo.mesh.visible = false
+        echo.mesh.position.z = 0.18
+        this.group.add(echo.mesh)
+        echoes.push(echo)
+      }
+
       this.pool.push({
-        core, shell, line, positions, colors,
+        core, shell, echoes, line, positions, colors,
         history: [], inUse: false, orbId: -1,
       })
     }
@@ -170,6 +187,7 @@ export class OrbView {
     slot.core.mesh.visible = true
     slot.shell.mesh.visible = true
     slot.line.visible = true
+    for (const e of slot.echoes) e.mesh.visible = true
     slot.core.mesh.position.set(orb.x, orb.y, 0.22)
     slot.shell.mesh.position.set(orb.x, orb.y, 0.2)
     this.byOrb.set(orb.id, slot)
@@ -183,6 +201,7 @@ export class OrbView {
     slot.core.mesh.visible = false
     slot.shell.mesh.visible = false
     slot.line.visible = false
+    for (const e of slot.echoes) e.mesh.visible = false
     slot.history = []
     this.byOrb.delete(orbId)
   }
@@ -218,6 +237,21 @@ export class OrbView {
         VISUAL.tokenGrid, VISUAL.tokenGrid * 1.4,
       )
 
+      // Echoes sample back through the history at a fixed stride, shrinking
+      // and dimming as they go.
+      const pts = slot.history.length / 2
+      for (let e = 0; e < slot.echoes.length; e++) {
+        const back = (e + 1) * VISUAL.trailEchoSpacing
+        const idx = pts - 1 - back
+        const echo = slot.echoes[e]!
+        if (idx < 1) { echo.mesh.visible = false; continue }
+        echo.mesh.visible = true
+        const f = 1 - e / slot.echoes.length
+        echo.mesh.position.set(slot.history[idx * 2]!, slot.history[idx * 2 + 1]!, 0.18)
+        echo.mesh.scale.setScalar(f * f * 0.9)
+        setSingle(echo, tint, f * f * 1.4, 0, 0)
+      }
+
       slot.history.push(orb.x, orb.y)
       const maxLen = TRAIL * 2
       if (slot.history.length > maxLen) {
@@ -237,7 +271,7 @@ export class OrbView {
       slot.positions[i * 3 + 1] = y
       slot.positions[i * 3 + 2] = 0
       const a = pts <= 1 ? 1 : i / (pts - 1)
-      const f = a * a
+      const f = a * a * a
       slot.colors[i * 3] = tint.r * f
       slot.colors[i * 3 + 1] = tint.g * f
       slot.colors[i * 3 + 2] = tint.b * f
@@ -306,6 +340,9 @@ export class OrbView {
     for (const p of this.pool) {
       ;(p.core.mesh.material as THREE.ShaderMaterial).uniforms.uTime!.value = time
       ;(p.shell.mesh.material as THREE.ShaderMaterial).uniforms.uTime!.value = time
+      for (const e of p.echoes) {
+        ;(e.mesh.material as THREE.ShaderMaterial).uniforms.uTime!.value = time
+      }
     }
     this.barrelMat.uniforms.uTime!.value = time
   }

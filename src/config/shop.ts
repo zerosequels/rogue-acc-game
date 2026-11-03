@@ -183,6 +183,17 @@ export const SHOP_ITEMS: readonly ShopItemDef[] = [
 export const SHOP = {
   /** Items offered per visit. */
   stock: 4,
+  /**
+   * Node count the `count` fields below were tuned against.
+   *
+   * Every node-targeting count is scaled by `board.nodes.length / this` at
+   * purchase time. Absolute counts have now broken TWICE when the lattice
+   * changed size — once at 68 nodes, where "+1 level to one weight" was 1.5%
+   * of the board against a required ~19% per purchase, and again when the
+   * board went dense and the same counts silently fell to a third of their
+   * intended reach. Scaling them removes the whole class of failure.
+   */
+  referenceNodes: 68,
   /** First reroll price, rising by `rerollStep` each time within a visit. */
   rerollBase: 1,
   rerollStep: 1,

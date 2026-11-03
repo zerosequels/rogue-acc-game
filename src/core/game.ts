@@ -45,6 +45,7 @@ import {
 } from '../sim/board'
 import { Renderer } from '../render/scene'
 import { BoardView } from '../render/boardView'
+import { Chrome } from '../render/chrome'
 import { OrbView } from '../render/orbView'
 import { Background } from '../render/background'
 import { Audio } from '../audio/sound'
@@ -56,6 +57,7 @@ export class Game {
   private renderer: Renderer
   private physics!: PhysicsWorld
   private boardView = new BoardView()
+  private chrome = new Chrome()
   private orbView = new OrbView()
   private background: Background
   private hud = new Hud()
@@ -91,6 +93,7 @@ export class Game {
     this.renderer = new Renderer(host)
     this.background = new Background(40, 40)
     this.renderer.scene.add(this.background.mesh)
+    this.renderer.scene.add(this.chrome.group)
     this.renderer.scene.add(this.boardView.group)
     this.renderer.scene.add(this.orbView.group)
     this.renderer.onResize(() => {
@@ -130,6 +133,7 @@ export class Game {
     this.board = this.buildRunBoard()
     this.physics.loadBoard(this.board)
     this.boardView.build(this.board)
+    this.chrome.build(this.board)
     this.rebuildBoardCaches()
 
     this.beginBenchmark()
@@ -314,7 +318,11 @@ export class Game {
       else if (isAttentionHead(hit.pin)) this.audio.criticalTick(this.pass.chain, 0.5)
       else this.audio.pinTick(this.pass.chain, 0.3)
 
-      if (isAttentionHead(hit.pin)) this.resolveCritical(hit.pin, hit.orb, ctx)
+      if (isAttentionHead(hit.pin)) {
+        const sp = this.renderer.worldToScreen(hit.pin.x, hit.pin.y)
+        this.hud.lock(sp.x, sp.y, `lock attn_${String(hit.pin.id).padStart(3, '0')}`)
+        this.resolveCritical(hit.pin, hit.orb, ctx)
+      }
       this.fireSignal(hit.pin, ctx)
     }
 
@@ -580,6 +588,7 @@ export class Game {
 
     // Pass the in-flight tokens so the board can compute proximity
     // excitation — the hologram's answer to a carried light.
+    this.chrome.update(t)
     if (this.board) this.boardView.update(dt, this.board, this.physics?.orbs ?? [])
     this.orbView.tick(t)
     this.orbView.update(this.physics?.orbs ?? [], this.displayHeat)
@@ -588,6 +597,19 @@ export class Game {
       this.launcher.predictPath(this.run.mods),
       this.run.phase === 'aim',
     )
+
+    // A coordinate lock riding the lead token: the instrument is watching it.
+    const lead = this.physics?.orbs?.[0]
+    if (lead && this.run.phase === 'resolving') {
+      const sp = this.renderer.worldToScreen(lead.x, lead.y)
+      const v = Math.round(Math.hypot(lead.vx, lead.vy))
+      this.hud.trackToken(
+        sp.x, sp.y,
+        `x ${lead.x.toFixed(1)}  y ${lead.y.toFixed(1)}  v ${v}`,
+      )
+    } else {
+      this.hud.hideTrack()
+    }
 
     if (playing) this.syncHud()
     this.renderer.render(dt)

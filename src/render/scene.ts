@@ -40,12 +40,32 @@ const VIEW_CY = (VIEW_TOP + VIEW_BOTTOM) / 2
  * Rogue sampling looks like the tensor is coming apart. That contrast is the
  * entire visual payoff of the temperature mechanic.
  */
-const GlitchShader = {
+/**
+ * Final composite: spectral dispersion, scanlines, dither and grain.
+ *
+ * Replaces the plain chromatic-split glitch pass. Three things the reference
+ * art does that a clean digital render does not:
+ *
+ *   SPECTRAL DISPERSION  a real lens splits a bright halo into RGB fringes.
+ *       Weighting the split by LUMINANCE means only the hot things fringe,
+ *       so the board stays neutral at rest and blooms prismatic on a strike.
+ *
+ *   ORDERED DITHER       a 4x4 Bayer threshold. Gives the phosphor/scanner
+ *       character the terminal aesthetic wants, and — not incidentally —
+ *       kills the banding that additive blending produces in dark areas.
+ *
+ *   FILM GRAIN           animated noise. Binds everything into one image and
+ *       stops the render reading as flat vector output.
+ */
+const CompositeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     uIntensity: { value: 0 },
     uTime: { value: 0 },
-    uAspect: { value: 1 },
+    uDisperse: { value: 0 },
+    uGrain: { value: 0 },
+    uDither: { value: 0 },
+    uScan: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -56,49 +76,72 @@ const GlitchShader = {
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float uIntensity;
-    uniform float uTime;
+    uniform float uIntensity, uTime, uDisperse, uGrain, uDither, uScan;
     varying vec2 vUv;
 
-    float hash(vec2 p) {
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+    // 4x4 Bayer matrix, unrolled.
+    float bayer(vec2 p){
+      int x = int(mod(p.x, 4.0));
+      int y = int(mod(p.y, 4.0));
+      int i = x + y * 4;
+      float m[16];
+      m[0]=0.0;  m[1]=8.0;  m[2]=2.0;  m[3]=10.0;
+      m[4]=12.0; m[5]=4.0;  m[6]=14.0; m[7]=6.0;
+      m[8]=3.0;  m[9]=11.0; m[10]=1.0; m[11]=9.0;
+      m[12]=15.0;m[13]=7.0; m[14]=13.0;m[15]=5.0;
+      float v = 0.0;
+      for (int k = 0; k < 16; k++) { if (k == i) v = m[k]; }
+      return v / 16.0 - 0.5;
     }
 
-    void main() {
+    void main(){
       vec2 uv = vUv;
       float k = uIntensity;
 
-      // Blocky horizontal displacement in coarse bands.
+      // Blocky band displacement, kept subtle — the glitch is seasoning now,
+      // not the main course.
       float band = floor(uv.y * 34.0);
       float jump = hash(vec2(band, floor(uTime * 11.0)));
-      // NB: do not name this variable 'active' -- it is a reserved word in
-      // GLSL ES and the shader silently fails to compile.
       float jitterOn = step(1.0 - k * 0.17, jump);
       uv.x += (hash(vec2(band, floor(uTime * 23.0))) - 0.5) * 0.028 * k * jitterOn;
 
-      // Chromatic aberration, scaling from the centre outward.
       vec2 fromCentre = uv - 0.5;
-      float split = (0.0010 + 0.0046 * k) * length(fromCentre) * 2.0;
-      float r = texture2D(tDiffuse, uv + fromCentre * split).r;
+      vec3 base = texture2D(tDiffuse, uv).rgb;
+      float lum = dot(base, vec3(0.299, 0.587, 0.114));
+
+      // Dispersion scales with BOTH distance from centre and local
+      // brightness, so a hot node fringes hard while the substrate does not.
+      float spread = (0.0009 + 0.0040 * k) + uDisperse * smoothstep(0.25, 1.6, lum);
+      vec2 off = fromCentre * spread;
+      float r = texture2D(tDiffuse, uv + off * 1.35).r;
       float g = texture2D(tDiffuse, uv).g;
-      float b = texture2D(tDiffuse, uv - fromCentre * split).b;
+      float b = texture2D(tDiffuse, uv - off * 1.35).b;
       vec3 col = vec3(r, g, b);
 
-      // Scanlines + a faint rolling bar: CRT-adjacent, reads as "instrumented".
-      float scan = 0.978 + 0.022 * sin(uv.y * 1100.0);
-      float roll = 0.985 + 0.015 * sin(uv.y * 5.0 - uTime * 1.6);
-      col *= scan * roll;
+      // A second wider tap picks up the outer halo and tints it, which is
+      // what gives a bright point the full prismatic ring.
+      vec3 wide = vec3(
+        texture2D(tDiffuse, uv + off * 3.1).r,
+        texture2D(tDiffuse, uv + off * 0.4).g,
+        texture2D(tDiffuse, uv - off * 3.1).b
+      );
+      col = mix(col, max(col, wide), smoothstep(0.1, 0.9, lum) * 0.55);
 
-      // Oversaturate as temperature climbs.
-      float lum = dot(col, vec3(0.299, 0.587, 0.114));
-      col = mix(vec3(lum), col, 1.0 + k * 0.32);
+      float scan = 1.0 - uScan + uScan * (0.5 + 0.5 * sin(uv.y * 1100.0));
+      col *= scan;
 
-      // Sparse white noise speckle at high temperature.
-      float speck = hash(uv * 820.0 + uTime * 40.0);
-      col += step(0.9997 - k * 0.0022, speck) * k * 0.45;
+      float satBoost = 1.0 + k * 0.32;
+      float l2 = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(vec3(l2), col, satBoost);
 
-      // Vignette keeps the eye on the board.
-      float vig = 1.0 - 0.28 * dot(fromCentre, fromCentre) * 2.0;
+      // Ordered dither, then grain. Dither first so the grain is not quantised.
+      col += bayer(gl_FragCoord.xy) * uDither;
+      float n = hash(gl_FragCoord.xy * 0.37 + fract(uTime) * 91.7);
+      col += (n - 0.5) * uGrain;
+
+      float vig = 1.0 - 0.30 * dot(fromCentre, fromCentre) * 2.0;
       gl_FragColor = vec4(col * vig, 1.0);
     }
   `,
@@ -169,7 +212,7 @@ export class Renderer {
     )
     this.composer.addPass(this.bloom)
 
-    this.glitch = new ShaderPass(GlitchShader)
+    this.glitch = new ShaderPass(CompositeShader)
     this.composer.addPass(this.glitch)
 
     this.composer.addPass(new OutputPass())
@@ -303,8 +346,13 @@ export class Renderer {
     }
 
     const k = Math.min(1, this.heat + this.shock * 0.55)
-    this.glitch.uniforms.uIntensity!.value = k * VISUAL.glitchMax + this.shock * 0.18
-    this.glitch.uniforms.uTime!.value = t
+    const g = this.glitch.uniforms
+    g.uIntensity!.value = k * VISUAL.glitchMax + this.shock * 0.18
+    g.uTime!.value = t
+    g.uDisperse!.value = VISUAL.dispersion * (1 + this.shock * 0.8)
+    g.uGrain!.value = VISUAL.grain
+    g.uDither!.value = VISUAL.dither
+    g.uScan!.value = VISUAL.scanlines
     this.bloom.strength = VISUAL.bloomStrength + k * VISUAL.bloomTempBoost + this.shock * 0.3
 
     this.composer.render()

@@ -12,6 +12,19 @@ import {
   priceOf, SHOP, SHOP_ITEMS,
   type Band, type ShopItemDef,
 } from '../config/shop'
+
+/**
+ * Resolve a node-targeting count against the ACTUAL board size.
+ *
+ * Shop reach has to be a fraction of the lattice, not a fixed number. See
+ * `SHOP.referenceNodes` for why this exists.
+ */
+function scaled(count: number, board: Board): number {
+  if (count >= 999) return count          // 999 means "every weight"
+  if (count <= 1) return count            // precise picks stay singular
+  const active = board.nodes.filter((n) => !n.removed).length
+  return Math.max(1, Math.round(count * (active / SHOP.referenceNodes)))
+}
 import type { Board, NodeDef, PocketDef } from '../sim/board'
 import type { Card } from '../sim/deck'
 import type { Rng } from './rng'
@@ -151,7 +164,7 @@ export function applyPurchase(
       // banded ones spray across several. That is the trade the price buys.
       const picked = offer.target?.kind === 'node'
         ? [board.nodes.find((n) => n.id === offer.target!.id)].filter(Boolean) as NodeDef[]
-        : rng.sample(pool, Math.min(e.count, pool.length))
+        : rng.sample(pool, Math.min(scaled(e.count, board), pool.length))
       if (picked.length === 0) return fail('no weight left to improve')
       for (const n of picked) n.level = Math.min(PROGRESSION.maxNodeLevel, n.level + e.amount)
       return done(
@@ -167,7 +180,7 @@ export function applyPurchase(
       if (pool.length === 0) return fail('no weight can take that')
       const picked = offer.target?.kind === 'node'
         ? [board.nodes.find((n) => n.id === offer.target!.id)].filter(Boolean) as NodeDef[]
-        : rng.sample(pool, Math.min(e.count, pool.length))
+        : rng.sample(pool, Math.min(scaled(e.count, board), pool.length))
       if (picked.length === 0) return fail('no weight can take that')
       for (const n of picked) n.transforms.push(e.transform)
       return done(

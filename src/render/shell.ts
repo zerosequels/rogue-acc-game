@@ -59,6 +59,8 @@ const fragmentShader = /* glsl */ `
   uniform float uGridGain;
   uniform float uScanGain;
   uniform float uFloor;
+  uniform float uCoreGain;
+  uniform float uCorePower;
 
   float gridLine(float x, float w) {
     float d = 0.5 - abs(fract(x) - 0.5);
@@ -83,14 +85,16 @@ const fragmentShader = /* glsl */ `
 
     float scan = pow(max(0.0, sin(vL.y * 6.0 - uTime * 2.1)), 16.0);
 
-    // Faint face-on fill, so a shell reads as enclosing a volume rather than
-    // as a hollow outline.
-    float fill = pow(ndv, 3.0) * 0.07;
+    // The core. Emission concentrates at a POINT rather than spreading over
+    // the whole shell — the single most important thing the reference art
+    // does. A uniformly glowing sphere washes out when 175 of them overlap;
+    // a hot centre inside a thin rim stays legible at seven pixels.
+    float core = pow(ndv, uCorePower) * uCoreGain;
 
     float a = rim * uRimGain
             + grid * (uGridGain + rim * 1.5)
             + scan * uScanGain
-            + fill
+            + core
             + uFloor;
 
     gl_FragColor = vec4(vC * a * vP.x, 1.0);
@@ -103,6 +107,10 @@ export interface ShellOptions {
   gridGain?: number
   scanGain?: number
   floor?: number
+  /** Brightness of the concentrated centre. */
+  coreGain?: number
+  /** Higher is tighter. Low values spread the core into a wash. */
+  corePower?: number
 }
 
 export function makeShellMaterial(o: ShellOptions = {}): THREE.ShaderMaterial {
@@ -116,6 +124,8 @@ export function makeShellMaterial(o: ShellOptions = {}): THREE.ShaderMaterial {
       uGridGain: { value: o.gridGain ?? 0.95 },
       uScanGain: { value: o.scanGain ?? 0.55 },
       uFloor: { value: o.floor ?? 0.015 },
+      uCoreGain: { value: o.coreGain ?? 1.15 },
+      uCorePower: { value: o.corePower ?? 5.0 },
     },
     transparent: true,
     blending: THREE.AdditiveBlending,

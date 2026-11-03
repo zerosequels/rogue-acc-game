@@ -13,7 +13,7 @@
 
 import { ECONOMY } from '../config/balance'
 import { totalBenchmarks } from '../config/rounds'
-import { PRECISION_LABEL, type Band, type Precision } from '../config/shop'
+import { PRECISION_LABEL, SHOP, type Band, type Precision } from '../config/shop'
 import type { ClearReward, RunState } from '../core/state'
 import type { Offer } from '../core/shopkeeper'
 import { bucketCandidates, cardCandidates, nodeCandidates, rerollPrice } from '../core/shopkeeper'
@@ -70,7 +70,7 @@ export class Overlays {
     this.sheet.replaceChildren()
 
     this.sheet.append(
-      h('h1', {}, [txt(`${bm.roundName} — `), span('cyan', bm.name)]),
+      h('h1', { class: 'fringe' }, [txt(`${bm.roundName} — `), span('cyan', bm.name)]),
       h('h2', {}, [txt(`benchmark ${run.benchmarkIndex + 1} of ${totalBenchmarks()} · ${board.architecture}`)]),
     )
 
@@ -114,7 +114,7 @@ export class Overlays {
     const bm = run.benchmark
     this.sheet.replaceChildren()
     this.sheet.append(
-      h('h1', {}, [span('ok', 'BENCHMARK EXCEEDED')]),
+      h('h1', { class: 'fringe' }, [span('ok', 'BENCHMARK EXCEEDED')]),
       h('h2', {}, [txt(`${bm.roundName} · ${bm.name}`)]),
       h('div', { class: 'flavor' }, [txt(clearLine(run.flavorRng('clear'), run.score, run.target))]),
       this.payoutTable(run, reward),
@@ -161,7 +161,7 @@ export class Overlays {
     const reroll = rerollPrice(rerolls)
 
     this.sheet.append(
-      h('h1', {}, [txt('Capital allocation')]),
+      h('h1', { class: 'fringe' }, [txt('Capital allocation')]),
       h('h2', {}, [
         txt('precision costs money — a blind upgrade is cheap, naming the target is not'),
       ]),
@@ -213,12 +213,13 @@ export class Overlays {
       class: `shop-card${offer.sold ? ' sold' : ''}${affordable ? '' : ' poor'}`,
       'data-prec': def.precision,
     }, [
+      h('div', { class: 'slug' }, [channelSlug(def, i)]),
       h('div', { class: 'prec' }, [
         h('span', { class: 'prec-tag' }, [def.precision]),
         h('span', { class: 'prec-note' }, [PRECISION_LABEL[def.precision]]),
       ]),
       h('div', { class: 'cname' }, [def.name]),
-      h('div', { class: 'cdesc' }, [effectText(def.effect)]),
+      h('div', { class: 'cdesc' }, [effectText(def.effect, board)]),
       h('div', { class: 'cflavor' }, [def.flavor]),
       h('div', { class: 'cfoot' }, [
         h('span', { class: 'price' }, [offer.sold ? 'SOLD' : `$${offer.price}`]),
@@ -226,7 +227,7 @@ export class Overlays {
       ]),
     ])
     if (affordable) card.addEventListener('click', () => this.beginBuy(offer, run, board, on))
-    return card
+    return bracket(card)
   }
 
   /**
@@ -343,7 +344,7 @@ export class Overlays {
     this.sheet.replaceChildren()
 
     this.sheet.append(
-      h('h1', {}, [span(won ? 'ok' : 'bad', won ? 'IPO' : 'THE BUBBLE POPS')]),
+      h('h1', { class: 'fringe' }, [span(won ? 'ok' : 'bad', won ? 'IPO' : 'THE BUBBLE POPS')]),
       h('h2', {}, [
         txt(won
           ? `all ${totalBenchmarks()} benchmarks exceeded · seed ${run.seed}`
@@ -377,12 +378,12 @@ export class Overlays {
 
 // --- DOM helpers -----------------------------------------------------------
 
-function effectText(e: Offer['def']['effect']): string {
+function effectText(e: Offer['def']['effect'], board?: Board): string {
   switch (e.kind) {
     case 'node-level': return e.count >= 999
       ? `+${e.amount} level to EVERY weight`
-      : `+${e.amount} level to ${e.count === 1 ? 'one weight' : `${e.count} weights`}`
-    case 'node-transform': return `${e.transform} on ${e.count === 1 ? 'one weight' : `${e.count} weights`}`
+      : `+${e.amount} level to ${e.count === 1 ? 'one weight' : `${reach(e.count, board)} weights`}`
+    case 'node-transform': return `${e.transform} on ${e.count === 1 ? 'one weight' : `${reach(e.count, board)} weights`}`
     case 'bucket-level': return `+${e.amount} level to ${e.count === 1 ? 'one output token' : `${e.count} output tokens`}`
     case 'bucket-transform': return `transform an output token → ${e.transform}`
     case 'card-level': return `+${e.amount} level to ${e.count === 1 ? 'one card' : `${e.count} cards`}`
@@ -391,6 +392,33 @@ function effectText(e: Offer['def']['effect']): string {
     case 'card-remove': return 'delete one card from the corpus'
     case 'activations': return `+${e.amount} activation${e.amount === 1 ? '' : 's'} every benchmark`
   }
+}
+
+/**
+ * A telemetry slug for a shop card — the effect's target channel, in the same
+ * register as the coordinate locks on the board.
+ */
+function channelSlug(def: Offer['def'], i: number): string {
+  const ch = def.effect.kind.replace('-', '_').toUpperCase()
+  return `CH_${String(i).padStart(2, '0')} · ${ch} · ${def.precision.toUpperCase()}`
+}
+
+/** Shop reach scales with the lattice, so the card must quote the real number. */
+function reach(count: number, board?: Board): number {
+  if (!board) return count
+  const active = board.nodes.filter((n) => !n.removed).length
+  return Math.max(1, Math.round(count * (active / SHOP.referenceNodes)))
+}
+
+/** Add instrument corner brackets to an element. */
+function bracket(node: HTMLElement): HTMLElement {
+  node.classList.add('bracketed')
+  for (const corner of ['tl', 'tr', 'bl', 'br']) {
+    const b = document.createElement('i')
+    b.className = `bk ${corner}`
+    node.append(b)
+  }
+  return node
 }
 
 function h(tag: string, attrs: Record<string, string>, children: (Node | string)[]): HTMLElement {

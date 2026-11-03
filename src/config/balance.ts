@@ -32,30 +32,33 @@ export const BOARD = {
 } as const
 
 export const PIN = {
-  /** Pins are deliberately LARGER than orbs: prevents tunnelling and makes
-   *  every bounce read clearly on screen. Do not invert this ratio. */
-  radius: 0.3,
-  criticalRadius: 0.52,
+  /** Weights stay LARGER than tokens: prevents tunnelling and keeps every
+   *  bounce legible. Do not invert this ratio. */
+  radius: 0.19,
+  criticalRadius: 0.34,
   /** Restitution FLOOR only. Colliders combine with CoefficientCombineRule.Max,
    *  so the orb's temperature-scaled restitution is what actually governs
    *  bounciness above this value. Keep it low or temperature stops mattering. */
   restitution: 0.25,
   friction: 0.04,
-  /** Minimum centre-to-centre distance between any two pins.
-   *  Must exceed 2*PIN.radius + 2*ORB.radius (= 1.1) or orbs cannot pass. */
-  minSpacing: 1.26,
+  /** Minimum centre-to-centre distance between any two weights. Must exceed
+   *  2*PIN.radius + 2*ORB.radius (= 0.69) or a token cannot pass between
+   *  neighbours. 0.80 leaves real clearance. */
+  minSpacing: 0.80,
 } as const
 
 export const ORB = {
-  radius: 0.25,
+  radius: 0.155,
   /** Base restitution at Balanced temperature. Multiplied by the selected
    *  tier's `bounce`, giving 0.46 / 0.58 / 0.73 / 0.87 across the four tiers.
    *  This single value is the main dial for how lively the whole board feels. */
   restitution: 0.58,
   friction: 0.02,
   linearDamping: 0.055,
-  /** Hard velocity clamp: anti-tunnel insurance + keeps cascades legible. */
-  maxSpeed: 40,
+  /** Hard velocity clamp. With the smaller radii, 40 u/s at a 1/120 step
+   *  moves 0.33 units against a combined radius of 0.345 — close enough to
+   *  tunnel if CCD ever misses. 30 keeps a step strictly under the gap. */
+  maxSpeed: 30,
   /** An orb below this speed for this long is considered stuck and culled. */
   stuckSpeed: 0.55,
   stuckSeconds: 1.5,
@@ -93,8 +96,8 @@ export const LAUNCH = {
 // ---------------------------------------------------------------------------
 
 export const SCORE = {
-  basePinValue: 10,
-  criticalPinValue: 35,
+  basePinValue: 4,
+  criticalPinValue: 14,
   /**
    * Progressive multiplier ladder, keyed on DISTINCT weights struck this pass.
    *
@@ -127,7 +130,7 @@ export const SCORE = {
   /** Spike pocket multiplies the whole pass's accumulated score. */
   spikeMultiplier: 5,
   /** Neutral bottom pockets award a flat consolation. */
-  pocketBonus: 15,
+  pocketBonus: 22,
   /** Hallucination Engine payout multiplier on a successful roll. */
   hallucinationMult: 5,
   /**
@@ -342,24 +345,25 @@ export const BOARDGEN = {
    * must be able to learn it. The seed varies edge wiring and starting state
    * instead (see `boardgen.ts`).
    */
-  layers: 9,
+  layers: 14,
   /** Even rows get this many nodes, odd rows one fewer and a half-cell shift. */
-  nodesPerLayer: 8,
+  nodesPerLayer: 13,
   /** Chance a node wires a third downward edge rather than two. */
   thirdEdgeChance: 0.34,
   /** Nodes that begin at level 2 rather than 1. */
-  startingPromotions: 3,
+  startingPromotions: 7,
   /** Attention heads placed unconditionally at run start. Never zero: the
-   *  tier bonus, split trigger and detonation trigger all key off them. */
-  startingAttentionHeads: 3,
+   *  tier bonus, split trigger and detonation trigger all key off them.
+   *  Scaled with the denser lattice so they stay findable. */
+  startingAttentionHeads: 6,
   /** Additional nodes that begin carrying one of the mild transforms. */
-  startingTransforms: 2,
+  startingTransforms: 4,
   startingBucketTransformChance: 0.55,
   pocketCount: 6,
   spikePocketsMin: 1,
   spikePocketsMax: 2,
   /** Horizontal inset from the rails for node placement. */
-  edgeInset: 1.15,
+  edgeInset: 0.85,
   pocketWallHeight: 1.7,
 } as const
 
@@ -386,18 +390,30 @@ export const VALIDATOR = {
 // ---------------------------------------------------------------------------
 
 export const VISUAL = {
-  bloomStrength: 0.50,
+  bloomStrength: 0.46,
   bloomRadius: 0.55,
-  bloomThreshold: 0.24,
+  bloomThreshold: 0.42,
   /** Extra bloom at max temperature. */
   bloomTempBoost: 0.3,
   /**
-   * Glitch intensity at max temperature. Tuned against a screenshot, not by
-   * eye in isolation: above ~0.35 the chromatic split starts competing with
-   * the board for attention instead of framing it.
+   * Glitch intensity ceiling. Tuned against a screenshot, not by eye: above
+   * ~0.35 the chromatic split competes with the board instead of framing it.
    */
-  glitchMax: 0.32,
-  trailLength: 26,
+  glitchMax: 0.26,
+
+  // --- final composite ------------------------------------------------------
+  /** Spectral dispersion of bright halos, weighted by luminance so only hot
+   *  things fringe. This is the prismatic bloom the reference art has and a
+   *  plain monochrome bloom cannot produce. */
+  dispersion: 0.0055,
+  /** Animated film grain. Binds the image together and hides the banding
+   *  additive blending leaves in dark areas. */
+  grain: 0.045,
+  /** Ordered 4x4 Bayer dither — the phosphor/scanner character. */
+  dither: 0.018,
+  /** Scanline depth. */
+  scanlines: 0.035,
+  trailLength: 64,
   pinFlashSeconds: 0.42,
   /** Signal pulses are briefer than contact flashes — they are a bonus
    *  passing through, not a weight being consumed. */
@@ -417,14 +433,14 @@ export const VISUAL = {
   headScale: 0.95,
 
   /** Energy contributions, summed per node per frame. */
-  restEnergy: 0.15,
-  proximityEnergy: 1.25,
-  strikeEnergy: 2.4,
-  signalEnergy: 1.5,
-  spentEnergy: 0.10,
+  restEnergy: 0.040,
+  proximityEnergy: 2.9,
+  strikeEnergy: 3.4,
+  signalEnergy: 2.2,
+  spentEnergy: 0.16,
   inertEnergy: 0.10,
   /** World units over which a token excites the shells around it. */
-  proximityRadius: 5.0,
+  proximityRadius: 4.2,
 
   /** Procedural grid density, rising with level — the third channel level
    *  reads on, alongside scale and nested shell count. */
@@ -436,10 +452,15 @@ export const VISUAL = {
 
   /** Conduits and the beads that ride them. */
   conduitRadius: 0.028,
-  conduitRest: 0.22,
+  conduitRest: 0.14,
   conduitLit: 2.2,
   beadRadius: 0.11,
   beadSpeed: 2.6,
+
+  /** Comet echoes: small shells strung down the trail at decreasing scale,
+   *  which is what makes motion taper. A line alone cannot narrow. */
+  trailEchoes: 10,
+  trailEchoSpacing: 4,
 
   /** Token: a hard plasma core inside a wider wireframe shell. */
   tokenCoreEnergy: 2.6,
@@ -450,6 +471,20 @@ export const VISUAL = {
   bucketDepth: 0.55,
   /** Z of the glyph label plane — in front of every shell. */
   labelZ: 0.6,
+
+  // --- instrument chrome ----------------------------------------------------
+  // Hairline apparatus around the field. A benchmarking game should look like
+  // an instrument reading a system, not like a bare playfield.
+  chromeZ: -0.05,
+  chromePad: 0.5,
+  chromeOpacity: 0.55,
+  bracketLength: 1.1,
+  tickCount: 30,
+  tickMajor: 0.34,
+  tickMinor: 0.17,
+  registrationRadius: 8.6,
+  sweepOpacity: 0.12,
+  sweepSpeed: 0.07,
 
   /** Legacy, from the flat ring pass. Unused by the holographic renderer. */
   ringThickness: 0.062,
@@ -503,4 +538,6 @@ export const COLORS = {
   pocketLine: 0x4d8fc4,
   /** Layers rendered inert by a boss modifier. */
   inert: 0x2a2f38,
+  /** Instrument hairlines — neutral, never the accent. */
+  chrome: 0x7fb6d9,
 } as const

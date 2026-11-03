@@ -40,8 +40,12 @@ export const BENCHMARK_NAMES: Record<BenchmarkKind, string> = {
 export const ROUNDS = {
   count: 8,
   perRound: 3,
-  /** Stage-1 target. Calibrated from `npm run propagation`. */
-  baseTarget: 900,
+  /** First-benchmark target. Calibrated from `npm run propagation`: on the
+   *  dense lattice a base pass medians ~245. The OPENER is an on-ramp, not a
+   *  test: at six passes out of ten activations half the runs died at
+   *  Pre-Seed with no room for a bad pass. ~3.5 passes is the right feel —
+   *  difficulty is carried by growth, not by the first benchmark. */
+  baseTarget: 950,
   /** Per-benchmark growth. See the invariant note above. */
   growth: 1.285,
   /** Payout by benchmark kind, plus one per funding round reached. */
