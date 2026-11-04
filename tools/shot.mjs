@@ -66,7 +66,7 @@ await page.keyboard.up(' ')
 
 // Capture while the wave is still travelling: hops are staggered at 65ms and
 // the ball needs time to reach the first node.
-await page.waitForTimeout(1500)
+await page.waitForTimeout(4200)  // let the feed post a few headlines
 const out = LOADED ? 'tools/signal.png' : 'tools/board.png'
 await page.screenshot({ path: out })
 console.log('wrote', out)

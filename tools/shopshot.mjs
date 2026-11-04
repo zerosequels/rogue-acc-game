@@ -32,8 +32,17 @@ for (let i=0;i<10;i++){
   await page.waitForTimeout(120)
 }
 const ph = await page.evaluate(()=>window.game['run'].phase)
-if (ph==='cleared'){ await page.keyboard.press('Enter'); await page.waitForTimeout(600) }
+if (ph==='cleared'){ await page.keyboard.press('Enter'); await page.waitForTimeout(700) }
+// Hover a blind item so the board shows which weights it would hit.
+const cards = page.locator('.side-card')
+const n = await cards.count()
+for (let i=0;i<n;i++){
+  const prec = await cards.nth(i).getAttribute('data-prec')
+  if (prec === 'blind') { await cards.nth(i).hover(); break }
+}
+await page.waitForTimeout(900)
 await page.screenshot({path:'tools/shop.png'})
+console.log('side cards:', n)
 console.log('phase', await page.evaluate(()=>window.game['run'].phase))
 await b.close(); server.close()
 if(errs.length){ console.error('ERRORS:', errs.slice(0,5)); process.exit(1) }

@@ -300,6 +300,113 @@
         color: #8ba0c0; font-size: 9px;
       }
 
+      /* ---------- side panel ---------- */
+      #side {
+        position: absolute; right: 18px; top: 104px; bottom: 54px;
+        width: 342px; display: flex; flex-direction: column;
+        background: var(--panel); border: 1px solid var(--line);
+        pointer-events: auto; overflow: hidden;
+      }
+      #side-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        padding: 10px 14px; border-bottom: 1px solid var(--line);
+        background: #0a1322; flex: 0 0 auto;
+      }
+      #side-title {
+        font-size: 12px; font-weight: 800; letter-spacing: .16em;
+        text-transform: uppercase; color: var(--cyan);
+      }
+      #side-sub {
+        font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase;
+        color: var(--dim);
+      }
+      #side-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; }
+      #side-body::-webkit-scrollbar { width: 5px; }
+      #side-body::-webkit-scrollbar-thumb { background: var(--line); }
+
+      /* --- feed mode --- */
+      .news {
+        border-left: 2px solid var(--line); padding: 7px 0 7px 11px;
+        margin-bottom: 11px; animation: newsIn .45s ease-out;
+      }
+      @keyframes newsIn {
+        from { opacity: 0; transform: translateX(10px); }
+        to   { opacity: 1; transform: none; }
+      }
+      .news .src {
+        font-size: 8.5px; letter-spacing: .18em; text-transform: uppercase;
+        color: var(--dim); margin-bottom: 3px;
+      }
+      .news .txt { font-size: 11.5px; line-height: 1.55; color: #9fb4d2; }
+      .news[data-tone="market"]  { border-left-color: #2b6e4a; }
+      .news[data-tone="market"]  .src { color: var(--lime); }
+      .news[data-tone="lab"]     { border-left-color: #1d4b5e; }
+      .news[data-tone="lab"]     .src { color: var(--cyan); }
+      .news[data-tone="rival"]   { border-left-color: #553f12; }
+      .news[data-tone="rival"]   .src { color: var(--amber); }
+      .news[data-tone="warning"] { border-left-color: #5c1f2b; }
+      .news[data-tone="warning"] .src { color: var(--red); }
+      .news[data-tone="warning"] .txt { color: #d2a9b2; }
+      .news[data-tone="absurd"]  { border-left-color: #4a1538; }
+      .news[data-tone="absurd"]  .src { color: var(--magenta); }
+      .news.old { opacity: .42; }
+
+      /* --- market mode --- */
+      #side.market { border-color: #2a4660; }
+      #side.market #side-title { color: var(--magenta); }
+      .side-wallet {
+        display: flex; align-items: baseline; gap: 9px;
+        padding: 0 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px;
+      }
+      .side-wallet .cash {
+        font-size: 26px; font-weight: 800; color: var(--magenta);
+        font-variant-numeric: tabular-nums;
+      }
+      .side-wallet .note { font-size: 9.5px; color: var(--dim); line-height: 1.4; }
+
+      .side-card {
+        position: relative; padding: 11px 12px; margin-bottom: 9px;
+        background: #070d18; border: 1px solid var(--line); cursor: pointer;
+        transition: background .12s, border-color .12s, transform .12s;
+      }
+      .side-card:hover { background: #0d1829; transform: translateX(-3px); }
+      .side-card.poor { opacity: .4; cursor: not-allowed; }
+      .side-card.poor:hover { transform: none; background: #070d18; }
+      .side-card[data-prec="blind"]   { --pick: var(--dim);   --bkcol: #2a3a52; }
+      .side-card[data-prec="banded"]  { --pick: var(--cyan);  --bkcol: #1d4b5e; }
+      .side-card[data-prec="precise"] { --pick: var(--amber); --bkcol: #553f12; }
+      .side-card:hover { border-color: var(--pick); }
+      .side-card .slug {
+        font-size: 8px; letter-spacing: .13em; color: var(--dim);
+        opacity: .7; margin-bottom: 5px;
+      }
+      .side-card .row {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+      }
+      .side-card .cname { font-size: 13px; font-weight: 700; line-height: 1.25; }
+      .side-card .price {
+        font-size: 15px; font-weight: 800; color: var(--magenta);
+        font-variant-numeric: tabular-nums; white-space: nowrap;
+      }
+      .side-card .cdesc { font-size: 10.5px; color: #8aa0bf; line-height: 1.5; margin-top: 5px; }
+      .side-card .ptag {
+        display: inline-block; font-size: 8px; letter-spacing: .14em;
+        text-transform: uppercase; color: var(--pick);
+        border: 1px solid currentColor; padding: 0 4px; margin-top: 7px;
+      }
+      .side-card .hint {
+        font-size: 9.5px; color: var(--lime); margin-top: 6px; min-height: 1.3em;
+      }
+
+      .side-actions { display: flex; gap: 7px; margin: 14px 0 4px; }
+      .side-actions .btn { margin: 0; flex: 1; padding: 9px 8px; font-size: 10.5px; text-align: center; }
+      .side-msg {
+        font-size: 10.5px; padding: 7px 10px; margin-bottom: 10px;
+        border-left: 2px solid var(--lime); background: rgba(157,255,74,.06);
+        color: #b6d6a0;
+      }
+      .side-msg.bad { border-left-color: var(--red); background: rgba(255,77,94,.06); color: #e0a8b0; }
+
       /* ---------- shop ---------- */
       .wallet {
         display: flex; align-items: baseline; gap: 14px;
@@ -462,6 +569,17 @@
       <div id="boss-bar"></div>
 
       <div id="deck-rail"></div>
+
+      <!-- One panel, two modes: the feed while a round runs, the market
+           between rounds. Keeping it in the same place means the board never
+           gets covered and the player's eye never has to relocate. -->
+      <aside id="side" class="surfaced">
+        <div id="side-head">
+          <span id="side-title">Feed</span>
+          <span id="side-sub">live</span>
+        </div>
+        <div id="side-body"></div>
+      </aside>
 
       <div id="charge-wrap"><div id="charge-fill"></div></div>
 

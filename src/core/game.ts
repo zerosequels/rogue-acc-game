@@ -51,7 +51,11 @@ import { Background } from '../render/background'
 import { Audio } from '../audio/sound'
 import { Hud } from '../ui/hud'
 import { Overlays } from '../ui/overlays'
-import { applyPurchase, rollStock, type Offer } from './shopkeeper'
+import { SidePanel } from '../ui/sidePanel'
+import {
+  applyPurchase, bucketCandidates, nodeCandidates, purchaseRng,
+  resolveTargets, rollStock, type Offer,
+} from './shopkeeper'
 
 export class Game {
   private renderer: Renderer
@@ -62,6 +66,7 @@ export class Game {
   private background: Background
   private hud = new Hud()
   private overlays = new Overlays()
+  private side = new SidePanel()
   private audio = new Audio()
 
   private run!: RunState
@@ -127,6 +132,8 @@ export class Game {
     this.hud.setSeed(seed)
     this.hud.invalidate()
     this.hud.clearPopups()
+    this.side.resetFeed()
+    this.side.showFeed()
     this.updateSeedInUrl(seed)
 
     this.boardView.clear()
@@ -171,6 +178,7 @@ export class Game {
     if (!board) throw new Error('beginBenchmark before the run board was built')
 
     this.run.phase = 'brief'
+    this.side.showFeed()
     this.physics.despawnAllOrbs()
     this.orbView.releaseAll()
     this.pass.reset()
@@ -469,7 +477,7 @@ export class Game {
       this.audio.stageClear()
       const reward = this.run.applyClearRewards()
       this.syncHud()
-      this.overlays.cleared(this.run, reward, () => this.openShop())
+      this.overlays.cleared(this.run, reward, () => { this.overlays.close(); this.openShop() })
       return
     }
 
@@ -493,10 +501,18 @@ export class Game {
   // -------------------------------------------------------------------------
 
   private shopRerolls = 0
+  /**
+   * A precise purchase waiting for the player to click its target on the
+   * board. With the shop docked, the net is visible — so naming a target
+   * means pointing at it, not scrolling a list of 175 ids.
+   */
+  private awaitingTarget: Offer | null = null
 
   private openShop(): void {
     this.run.phase = 'shop'
     this.shopRerolls = 0
+    // Dim the net so the panel and the hover preview carry focus.
+    if (this.board) this.boardView.setMuted(true, this.board)
     this.showShop()
   }
 
@@ -505,27 +521,69 @@ export class Game {
     if (!board) return
     const rng = deriveRng(this.run.seed, 'shop', this.run.benchmarkIndex, this.shopRerolls)
     const stock = rollStock(this.run, board, rng)
-    this.overlays.shop(this.run, board, stock, this.shopRerolls, {
+    this.side.showMarket(this.run, board, stock, this.shopRerolls, {
       buy: (offer) => this.buy(offer),
       reroll: () => { this.shopRerolls++; this.showShop() },
       leave: () => this.leaveShop(),
+      hover: (offer) => this.previewOffer(offer),
+      describe: (offer) => this.describeOffer(offer),
     })
+  }
+
+  /**
+   * Light the weights a hovered purchase would actually hit.
+   *
+   * This resolves through the SAME function and the SAME rng the purchase
+   * will use, so it is the real outcome rather than an illustration. The
+   * player gets complete information about a selection that stays random —
+   * which is the point: you choose what to buy, not where it lands, but you
+   * are never buying blind.
+   */
+  private previewOffer(offer: Offer | null): void {
+    const board = this.board
+    if (!board || this.awaitingTarget) return
+    if (!offer) { this.boardView.clearPreview(board); return }
+    const t = resolveTargets(offer, this.run, board, purchaseRng(this.run))
+    this.boardView.setPreview(
+      t.nodes.map((n) => n.id),
+      t.buckets.map((b) => b.id),
+      board,
+    )
+  }
+
+  private describeOffer(offer: Offer): string {
+    const board = this.board
+    if (!board) return ''
+    const t = resolveTargets(offer, this.run, board, purchaseRng(this.run))
+    const bits: string[] = []
+    if (t.nodes.length === 1) bits.push(`weight #${t.nodes[0]!.id} (layer ${t.nodes[0]!.layer})`)
+    else if (t.nodes.length > 1) bits.push(`${t.nodes.length} weights, highlighted`)
+    if (t.buckets.length === 1) bits.push(`TOK_${String(t.buckets[0]!.id).padStart(2, '0')}`)
+    else if (t.buckets.length > 1) bits.push(`${t.buckets.length} output tokens`)
+    if (t.cards.length === 1) bits.push(`card #${t.cards[0]!.id}`)
+    else if (t.cards.length > 1) bits.push(`${t.cards.length} cards`)
+    if (bits.length === 0) return offer.def.precision === 'precise' ? 'you pick the target' : 'applies on purchase'
+    return `→ ${bits.join(' · ')}`
   }
 
   private buy(offer: Offer): void {
     const board = this.board
     if (!board) return
-    if (!this.run.canAfford(offer.price)) {
-      this.audio.uiDenied()
+    if (!this.run.canAfford(offer.price)) { this.audio.uiDenied(); return }
+
+    // Precise purchases wait for a click on the board.
+    if (offer.def.precision === 'precise' && !offer.target && this.needsBoardTarget(offer)) {
+      this.awaitingTarget = offer
+      this.side.setMessage('click a target on the board — esc to cancel', true)
+      this.showShop()
       return
     }
-    const rng = deriveRng(
-      this.run.seed, 'buy', this.run.benchmarkIndex, this.run.totals.itemsBought,
-    )
-    const result = applyPurchase(offer, this.run, board, rng)
+
+    const result = applyPurchase(offer, this.run, board, purchaseRng(this.run))
     if (!result.ok) {
       this.audio.uiDenied()
-      this.overlays.shopMessage(result.message, false)
+      this.side.setMessage(result.message, false)
+      this.showShop()
       return
     }
     this.run.pay(offer.price, offer.def.id)
@@ -536,14 +594,82 @@ export class Game {
       this.physics.loadBoard(board)
       this.boardView.build(board)
       this.boardView.setDeadLayers(this.deadLayers, board)
+      this.boardView.setMuted(true, board)
+      this.chrome.build(board)
       this.rebuildBoardCaches()
     }
-    this.overlays.shopMessage(result.message, true)
+    this.side.setMessage(result.message, true)
+    this.showShop()
+  }
+
+  /** Does this precise effect point at something the board can show? */
+  private needsBoardTarget(offer: Offer): boolean {
+    const k = offer.def.effect.kind
+    return k === 'node-level' || k === 'node-transform'
+      || k === 'bucket-level' || k === 'bucket-transform'
+  }
+
+  /** Nearest eligible target to a world point, while picking. */
+  private pickAt(wx: number, wy: number): void {
+    const board = this.board
+    const offer = this.awaitingTarget
+    if (!board || !offer) return
+    const k = offer.def.effect.kind
+
+    if (k === 'bucket-level' || k === 'bucket-transform') {
+      const pool = bucketCandidates(offer.def, board)
+      let best = pool[0]
+      let bd = Infinity
+      for (const p of pool) {
+        const d = Math.abs(p.x - wx)
+        if (d < bd) { bd = d; best = p }
+      }
+      if (best) this.boardView.setPreview([], [best.id], board)
+      this.hoverTarget = best ? { kind: 'bucket', id: best.id } : null
+      return
+    }
+
+    const pool = nodeCandidates(offer.def, board)
+    let best = pool[0]
+    let bd = Infinity
+    for (const n of pool) {
+      const d = Math.hypot(n.x - wx, n.y - wy)
+      if (d < bd) { bd = d; best = n }
+    }
+    if (best) this.boardView.setPreview([best.id], [], board)
+    this.hoverTarget = best ? { kind: 'node', id: best.id } : null
+  }
+
+  private hoverTarget: { kind: 'node' | 'bucket'; id: number } | null = null
+
+  private commitTarget(): void {
+    const offer = this.awaitingTarget
+    if (!offer || !this.hoverTarget) return
+    offer.target = this.hoverTarget
+    this.awaitingTarget = null
+    this.hoverTarget = null
+    this.buy(offer)
+  }
+
+  private cancelTarget(): void {
+    if (!this.awaitingTarget) return
+    this.awaitingTarget = null
+    this.hoverTarget = null
+    if (this.board) this.boardView.clearPreview(this.board)
+    this.side.setMessage('cancelled', false)
     this.showShop()
   }
 
   private leaveShop(): void {
-    this.overlays.close()
+    this.awaitingTarget = null
+    this.hoverTarget = null
+    const board = this.board
+    if (board) {
+      this.boardView.clearPreview(board)
+      this.boardView.setMuted(false, board)
+    }
+    this.side.resetFeed()
+    this.side.showFeed()
     this.run.advanceBenchmark()
     this.beginBenchmark()
   }
@@ -589,6 +715,9 @@ export class Game {
     // Pass the in-flight tokens so the board can compute proximity
     // excitation — the hologram's answer to a carried light.
     this.chrome.update(t)
+    if (this.run.phase === 'aim' || this.run.phase === 'resolving') {
+      this.side.tickFeed(t, this.run)
+    }
     if (this.board) this.boardView.update(dt, this.board, this.physics?.orbs ?? [])
     this.orbView.tick(t)
     this.orbView.update(this.physics?.orbs ?? [], this.displayHeat)
@@ -636,6 +765,7 @@ export class Game {
   private installInput(): void {
     window.addEventListener('keydown', (e) => {
       this.audio.unlock()
+      if (e.key === 'Escape') { this.cancelTarget(); return }
       if (e.key === 'm' || e.key === 'M') {
         const muted = this.audio.toggleMute()
         this.hud.setMuted(muted)
@@ -673,12 +803,18 @@ export class Game {
 
     const canvas = this.renderer.renderer.domElement
     canvas.addEventListener('pointermove', (e) => {
+      if (this.awaitingTarget) {
+        const w = this.renderer.screenToWorld(e.clientX, e.clientY)
+        this.pickAt(w.x, w.y)
+        return
+      }
       if (this.run.phase !== 'aim') return
       const w = this.renderer.screenToWorld(e.clientX, e.clientY)
       this.launcher.aimAt(w.x, w.y)
     })
     canvas.addEventListener('pointerdown', (e) => {
       this.audio.unlock()
+      if (this.awaitingTarget) { e.preventDefault(); this.commitTarget(); return }
       if (this.run.phase !== 'aim') return
       e.preventDefault()
       const w = this.renderer.screenToWorld(e.clientX, e.clientY)

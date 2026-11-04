@@ -111,35 +111,41 @@ if (!mid.pins || mid.pins < 10) throw new Error('no contacts registered: ' + JSO
 if (!mid.signal || mid.signal < 20) throw new Error('propagation did not fire: ' + JSON.stringify(mid))
 console.log(`✓ contacts ${mid.pins}, signal activations ${mid.signal}`)
 
-// The shop must open, stock items, and complete a purchase.
+// The shop is a docked side panel now, not a sheet. It must open, stock
+// items, preview targets on hover, and complete a purchase.
 if (mid.phase === 'cleared') {
   await page.keyboard.press('Enter')
-  await page.waitForTimeout(450)
-  const shopText = await page.textContent('#sheet')
-  if (!/Capital allocation/.test(shopText || '')) throw new Error('shop did not open: ' + shopText)
-  const cards = await page.locator('.shop-card').count()
-  if (cards < 1) throw new Error('shop had no stock')
-  console.log(`✓ shop opened with ${cards} items, capital $${mid.money}`)
+  await page.waitForTimeout(600)
+  const title = await page.textContent('#side-title')
+  if (!/Market/i.test(title || '')) throw new Error('market panel did not open: ' + title)
+  const cards = page.locator('.side-card')
+  const n = await cards.count()
+  if (n < 1) throw new Error('market had no stock')
+  console.log(`✓ market panel opened with ${n} items, capital $${mid.money}`)
 
-  const before = await page.evaluate(() => window.game['run'].money)
-  await page.locator('.shop-card').first().click()
-  await page.waitForTimeout(400)
-  // Banded and precise items open a chooser first; resolve whichever appears.
-  if (await page.locator('.target-row').count() > 0) {
-    await page.locator('.target-row').first().click()
-    await page.waitForTimeout(400)
-  } else if (/which third/.test((await page.textContent('#sheet')) || '')) {
-    await page.locator('.shop-card').first().click()
-    await page.waitForTimeout(400)
+  // Hover a blind item: the board must light its real targets.
+  let blind = -1
+  for (let i = 0; i < n; i++) {
+    if ((await cards.nth(i).getAttribute('data-prec')) === 'blind') { blind = i; break }
   }
-  const got = await page.evaluate(() => ({
-    money: window.game['run'].money,
-    bought: window.game['run'].totals.itemsBought,
-  }))
-  if (got.bought < 1) throw new Error('purchase did not apply: ' + JSON.stringify(got))
-  console.log(`✓ bought an item: $${before} → $${got.money}, ${got.bought} owned`)
-}
+  if (blind >= 0) {
+    await cards.nth(blind).hover()
+    await page.waitForTimeout(350)
+    const hint = await cards.nth(blind).locator('.hint').textContent()
+    if (!hint || hint.trim().length === 0) throw new Error('hover preview produced no hint')
+    console.log(`✓ hover preview: "${hint.trim()}"`)
 
+    const before = await page.evaluate(() => window.game['run'].money)
+    await cards.nth(blind).click()
+    await page.waitForTimeout(450)
+    const got = await page.evaluate(() => ({
+      money: window.game['run'].money,
+      bought: window.game['run'].totals.itemsBought,
+    }))
+    if (got.bought < 1) throw new Error('purchase did not apply: ' + JSON.stringify(got))
+    console.log(`✓ bought a blind item: $${before} → $${got.money}`)
+  }
+}
 
 // Audio: the context must exist and be running after real user gestures.
 // A silently-suspended AudioContext is the classic autoplay-policy failure.
@@ -201,14 +207,16 @@ while (guard++ < 900) {
 
   if (st.open) {
     // Brief and clear take Enter; the shop must be left explicitly.
-    if (st.phase === 'shop') {
-      const leave = page.locator('.btn', { hasText: 'CONTINUE' })
-      if (await leave.count()) await leave.first().click()
-      else await page.keyboard.press('Enter')
-    } else {
-      await page.keyboard.press('Enter')
-    }
+    await page.keyboard.press('Enter')
     await page.waitForTimeout(170)
+    continue
+  }
+
+  if (st.phase === 'shop') {
+    // The market is a docked panel; it has no overlay to dismiss.
+    const leave = page.locator('#side .btn', { hasText: 'CONTINUE' })
+    if (await leave.count()) await leave.first().click()
+    await page.waitForTimeout(220)
     continue
   }
 

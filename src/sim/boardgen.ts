@@ -184,11 +184,17 @@ function generatePockets(rng: Rng): PocketDef[] {
     else if (centreSlots.includes(i)) kind = 'drain'
     else kind = rng.bool(0.4) ? 'drain' : 'pocket'
 
+    // Pockets TILE the floor: uniform width, no gaps. Narrowing the spikes
+    // left dead strips between pockets where a token resolved to nothing,
+    // fell through, and got culled as stuck — a dropped shot with no
+    // feedback and no score, which is the worst outcome a pachinko floor
+    // can produce. Spikes stay hard by POSITION (never centre), not by
+    // being small enough to fall past.
     pockets.push({
       id: i,
       kind,
       x: left + slotWidth * (i + 0.5),
-      halfWidth: (slotWidth / 2) * (kind === 'spike' ? 0.55 : 1),
+      halfWidth: slotWidth / 2,
       level: 1,
       transform: null,
     })

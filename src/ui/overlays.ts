@@ -13,10 +13,8 @@
 
 import { ECONOMY } from '../config/balance'
 import { totalBenchmarks } from '../config/rounds'
-import { PRECISION_LABEL, SHOP, type Band, type Precision } from '../config/shop'
+
 import type { ClearReward, RunState } from '../core/state'
-import type { Offer } from '../core/shopkeeper'
-import { bucketCandidates, cardCandidates, nodeCandidates, rerollPrice } from '../core/shopkeeper'
 import { clearLine, failLine, pressureLine, VICTORY_LINE } from '../flavor/text'
 import type { Board } from '../sim/board'
 import { cardLabel } from '../sim/deck'
@@ -28,17 +26,10 @@ function el<T extends HTMLElement>(id: string): T {
   return node as T
 }
 
-export interface ShopHandlers {
-  buy: (offer: Offer) => void
-  reroll: () => void
-  leave: () => void
-}
-
 export class Overlays {
   private overlay = el('overlay')
   private sheet = el('sheet')
   private keyHandler: ((e: KeyboardEvent) => void) | null = null
-  private message: { text: string; ok: boolean } | null = null
 
   get isOpen(): boolean { return this.overlay.classList.contains('on') }
 
@@ -47,7 +38,6 @@ export class Overlays {
   close(): void {
     this.overlay.classList.remove('on')
     this.sheet.replaceChildren()
-    this.message = null
     if (this.keyHandler) {
       window.removeEventListener('keydown', this.keyHandler)
       this.keyHandler = null
@@ -156,170 +146,6 @@ export class Overlays {
   // Shop
   // -------------------------------------------------------------------------
 
-  shop(run: RunState, board: Board, stock: Offer[], rerolls: number, on: ShopHandlers): void {
-    this.sheet.replaceChildren()
-    const reroll = rerollPrice(rerolls)
-
-    this.sheet.append(
-      h('h1', { class: 'fringe' }, [txt('Capital allocation')]),
-      h('h2', {}, [
-        txt('precision costs money — a blind upgrade is cheap, naming the target is not'),
-      ]),
-      h('div', { class: 'wallet' }, [
-        h('span', { class: 'cash' }, [`$${run.money}`]),
-        h('span', { class: 'cashnote' }, [
-          `one dollar is one billion dollars · interest pays $1 per $${ECONOMY.interestPer} held, capped at $${ECONOMY.interestCap}`,
-        ]),
-      ]),
-    )
-
-    if (this.message) {
-      this.sheet.append(
-        h('div', { class: this.message.ok ? 'shop-msg ok' : 'shop-msg bad' }, [this.message.text]),
-      )
-    }
-
-    const grid = h('div', { id: 'shop-grid' }, [])
-    stock.forEach((offer, i) => {
-      grid.append(this.shopCard(offer, i, run, board, on))
-    })
-    this.sheet.append(grid)
-
-    const controls = h('div', { class: 'shop-controls' }, [])
-    const rerollBtn = button(`REROLL STOCK  $${reroll}`, () => {
-      if (run.money >= reroll) { run.money -= reroll; on.reroll() }
-    }, run.money < reroll)
-    controls.append(rerollBtn, button('CONTINUE  ▸', on.leave))
-    this.sheet.append(controls, this.deckStrip(run))
-
-    this.open()
-    this.bindKeys((e) => {
-      const n = Number(e.key)
-      if (n >= 1 && n <= stock.length) {
-        e.preventDefault()
-        const offer = stock[n - 1]!
-        if (!offer.sold && run.canAfford(offer.price)) this.beginBuy(offer, run, board, on)
-      } else if (e.key === 'Enter') {
-        e.preventDefault()
-        on.leave()
-      }
-    })
-  }
-
-  private shopCard(offer: Offer, i: number, run: RunState, board: Board, on: ShopHandlers): HTMLElement {
-    const { def } = offer
-    const affordable = run.canAfford(offer.price) && !offer.sold
-    const card = h('div', {
-      class: `shop-card${offer.sold ? ' sold' : ''}${affordable ? '' : ' poor'}`,
-      'data-prec': def.precision,
-    }, [
-      h('div', { class: 'slug' }, [channelSlug(def, i)]),
-      h('div', { class: 'prec' }, [
-        h('span', { class: 'prec-tag' }, [def.precision]),
-        h('span', { class: 'prec-note' }, [PRECISION_LABEL[def.precision]]),
-      ]),
-      h('div', { class: 'cname' }, [def.name]),
-      h('div', { class: 'cdesc' }, [effectText(def.effect, board)]),
-      h('div', { class: 'cflavor' }, [def.flavor]),
-      h('div', { class: 'cfoot' }, [
-        h('span', { class: 'price' }, [offer.sold ? 'SOLD' : `$${offer.price}`]),
-        h('span', { class: 'ckey' }, [`press ${i + 1}`]),
-      ]),
-    ])
-    if (affordable) card.addEventListener('click', () => this.beginBuy(offer, run, board, on))
-    return bracket(card)
-  }
-
-  /**
-   * Blind purchases apply immediately. Banded and precise ones first ask
-   * where — that choice is literally what the extra money bought.
-   */
-  private beginBuy(offer: Offer, run: RunState, board: Board, on: ShopHandlers): void {
-    if (offer.def.precision === 'blind') { on.buy(offer); return }
-    if (offer.def.precision === 'banded') { this.pickBand(offer, on); return }
-    this.pickTarget(offer, run, board, on)
-  }
-
-  private pickBand(offer: Offer, on: ShopHandlers): void {
-    this.sheet.replaceChildren()
-    this.sheet.append(
-      h('h1', {}, [txt(offer.def.name)]),
-      h('h2', {}, [txt('you paid to choose a band — which third of the network?')]),
-    )
-    const grid = h('div', { id: 'shop-grid' }, [])
-    const bands: { id: Band; label: string; note: string }[] = [
-      { id: 'upper', label: 'Upper layers', note: 'closest to the launcher — feeds the most hops downstream' },
-      { id: 'middle', label: 'Middle layers', note: 'balanced: decent traffic, decent reach' },
-      { id: 'lower', label: 'Lower layers', note: 'heaviest traffic, but little left below it to carry signal' },
-    ]
-    bands.forEach((b, i) => {
-      const card = h('div', { class: 'shop-card', 'data-prec': 'banded' }, [
-        h('div', { class: 'cname' }, [b.label]),
-        h('div', { class: 'cdesc' }, [b.note]),
-        h('div', { class: 'cfoot' }, [h('span', { class: 'ckey' }, [`press ${i + 1}`])]),
-      ])
-      card.addEventListener('click', () => { offer.band = b.id; on.buy(offer) })
-      grid.append(card)
-    })
-    this.sheet.append(grid)
-    this.open()
-    this.bindKeys((e) => {
-      const n = Number(e.key)
-      if (n >= 1 && n <= bands.length) {
-        e.preventDefault()
-        offer.band = bands[n - 1]!.id
-        on.buy(offer)
-      }
-    })
-  }
-
-  private pickTarget(offer: Offer, run: RunState, board: Board, on: ShopHandlers): void {
-    const kind = offer.def.effect.kind
-    this.sheet.replaceChildren()
-    this.sheet.append(
-      h('h1', {}, [txt(offer.def.name)]),
-      h('h2', {}, [txt('you paid to name the target — pick it')]),
-    )
-
-    const list = h('div', { class: 'target-list' }, [])
-
-    if (kind === 'node-level' || kind === 'node-transform') {
-      const pool = nodeCandidates(offer.def, board).slice(0, 60)
-      for (const n of pool) {
-        const row = h('button', { class: 'target-row' }, [
-          h('span', { class: 'tid' }, [`#${n.id}`]),
-          h('span', {}, [`layer ${n.layer}  ·  L${n.level}`]),
-          h('span', { class: 'ttag' }, [n.transforms.join(' · ') || '—']),
-        ])
-        row.addEventListener('click', () => { offer.target = { kind: 'node', id: n.id }; on.buy(offer) })
-        list.append(row)
-      }
-    } else if (kind === 'bucket-level' || kind === 'bucket-transform') {
-      for (const p of bucketCandidates(offer.def, board)) {
-        const row = h('button', { class: 'target-row' }, [
-          h('span', { class: 'tid' }, [`TOK_${String(p.id).padStart(2, '0')}`]),
-          h('span', {}, [`${p.kind}  ·  L${p.level}`]),
-          h('span', { class: 'ttag' }, [p.transform ?? '—']),
-        ])
-        row.addEventListener('click', () => { offer.target = { kind: 'bucket', id: p.id }; on.buy(offer) })
-        list.append(row)
-      }
-    } else {
-      for (const c of cardCandidates(offer.def, run)) {
-        const row = h('button', { class: 'target-row' }, [
-          h('span', { class: 'tid' }, [`#${c.id}`]),
-          h('span', {}, [cardLabel(c)]),
-          h('span', { class: 'ttag' }, ['']),
-        ])
-        row.addEventListener('click', () => { offer.target = { kind: 'card', id: c.id }; on.buy(offer) })
-        list.append(row)
-      }
-    }
-
-    this.sheet.append(list)
-    this.open()
-  }
-
   private deckStrip(run: RunState): HTMLElement {
     const strip = h('div', { class: 'deck-strip' }, [])
     strip.append(h('div', { class: 'label' }, [`Corpus — ${run.deck.size} cards`]))
@@ -331,9 +157,12 @@ export class Overlays {
     return strip
   }
 
-  shopMessage(text: string, ok: boolean): void {
-    this.message = { text, ok }
-  }
+  /**
+   * The shop moved to the docked side panel (`ui/sidePanel.ts`). A
+   * full-screen sheet covered the board, which made the hover preview
+   * impossible — there was nowhere to show which weights a purchase would
+   * hit. The deck strip and run-end sheet still live here.
+   */
 
   // -------------------------------------------------------------------------
   // Run end
@@ -378,48 +207,9 @@ export class Overlays {
 
 // --- DOM helpers -----------------------------------------------------------
 
-function effectText(e: Offer['def']['effect'], board?: Board): string {
-  switch (e.kind) {
-    case 'node-level': return e.count >= 999
-      ? `+${e.amount} level to EVERY weight`
-      : `+${e.amount} level to ${e.count === 1 ? 'one weight' : `${reach(e.count, board)} weights`}`
-    case 'node-transform': return `${e.transform} on ${e.count === 1 ? 'one weight' : `${reach(e.count, board)} weights`}`
-    case 'bucket-level': return `+${e.amount} level to ${e.count === 1 ? 'one output token' : `${e.count} output tokens`}`
-    case 'bucket-transform': return `transform an output token → ${e.transform}`
-    case 'card-level': return `+${e.amount} level to ${e.count === 1 ? 'one card' : `${e.count} cards`}`
-    case 'card-transform': return `transform a card → ${e.transform}`
-    case 'card-add': return `add ${e.count} ${e.cardType} cards to the corpus`
-    case 'card-remove': return 'delete one card from the corpus'
-    case 'activations': return `+${e.amount} activation${e.amount === 1 ? '' : 's'} every benchmark`
-  }
-}
 
-/**
- * A telemetry slug for a shop card — the effect's target channel, in the same
- * register as the coordinate locks on the board.
- */
-function channelSlug(def: Offer['def'], i: number): string {
-  const ch = def.effect.kind.replace('-', '_').toUpperCase()
-  return `CH_${String(i).padStart(2, '0')} · ${ch} · ${def.precision.toUpperCase()}`
-}
 
-/** Shop reach scales with the lattice, so the card must quote the real number. */
-function reach(count: number, board?: Board): number {
-  if (!board) return count
-  const active = board.nodes.filter((n) => !n.removed).length
-  return Math.max(1, Math.round(count * (active / SHOP.referenceNodes)))
-}
 
-/** Add instrument corner brackets to an element. */
-function bracket(node: HTMLElement): HTMLElement {
-  node.classList.add('bracketed')
-  for (const corner of ['tl', 'tr', 'bl', 'br']) {
-    const b = document.createElement('i')
-    b.className = `bk ${corner}`
-    node.append(b)
-  }
-  return node
-}
 
 function h(tag: string, attrs: Record<string, string>, children: (Node | string)[]): HTMLElement {
   const node = document.createElement(tag)
@@ -448,4 +238,3 @@ function statGrid(rows: [string, string, string][]): HTMLElement {
   return grid
 }
 
-export type { Precision }

@@ -390,11 +390,11 @@ export const VALIDATOR = {
 // ---------------------------------------------------------------------------
 
 export const VISUAL = {
-  bloomStrength: 0.46,
-  bloomRadius: 0.55,
-  bloomThreshold: 0.42,
+  bloomStrength: 0.30,
+  bloomRadius: 0.44,
+  bloomThreshold: 0.52,
   /** Extra bloom at max temperature. */
-  bloomTempBoost: 0.3,
+  bloomTempBoost: 0.18,
   /**
    * Glitch intensity ceiling. Tuned against a screenshot, not by eye: above
    * ~0.35 the chromatic split competes with the board instead of framing it.
@@ -405,7 +405,7 @@ export const VISUAL = {
   /** Spectral dispersion of bright halos, weighted by luminance so only hot
    *  things fringe. This is the prismatic bloom the reference art has and a
    *  plain monochrome bloom cannot produce. */
-  dispersion: 0.0055,
+  dispersion: 0.0032,
   /** Animated film grain. Binds the image together and hides the banding
    *  additive blending leaves in dark areas. */
   grain: 0.045,
@@ -434,13 +434,17 @@ export const VISUAL = {
 
   /** Energy contributions, summed per node per frame. */
   restEnergy: 0.040,
-  proximityEnergy: 2.9,
-  strikeEnergy: 3.4,
+  proximityEnergy: 2.3,
+  strikeEnergy: 2.8,
   signalEnergy: 2.2,
   spentEnergy: 0.16,
   inertEnergy: 0.10,
   /** World units over which a token excites the shells around it. */
   proximityRadius: 4.2,
+  /** Everything not previewed drops to this while the shop panel is open. */
+  mutedEnergyScale: 0.28,
+  /** Extra energy on a weight a hovered purchase would hit. */
+  previewEnergy: 2.6,
 
   /** Procedural grid density, rising with level — the third channel level
    *  reads on, alongside scale and nested shell count. */
@@ -540,4 +544,6 @@ export const COLORS = {
   inert: 0x2a2f38,
   /** Instrument hairlines — neutral, never the accent. */
   chrome: 0x7fb6d9,
+  /** Weights a hovered shop item would hit. */
+  preview: 0x9dff4a,
 } as const

@@ -76,6 +76,11 @@ export class BoardView {
   private labelsDirty = true
   private deadLayers = 0
   private time = 0
+  /** Shop mode: the net dims so the panel and the preview can carry focus. */
+  private muted = false
+  /** Weights a hovered shop item would hit. */
+  private preview = new Set<number>()
+  private previewBuckets = new Set<number>()
 
   constructor() {
     this.group.position.z = 0
@@ -404,6 +409,38 @@ export class BoardView {
     e.active = true
   }
 
+  /** Dim the whole net. Used while the shop panel is open. */
+  setMuted(muted: boolean, board: Board): void {
+    if (this.muted === muted) return
+    this.muted = muted
+    this.writeAll(board)
+  }
+
+  /**
+   * Highlight exactly the weights a hovered purchase would hit.
+   *
+   * The ids come from `resolveTargets` with the real purchase rng, so this
+   * is not an illustration — it is the actual outcome. The player gets full
+   * information about a selection that is still random.
+   */
+  setPreview(nodeIds: Iterable<number>, bucketIds: Iterable<number>, board: Board): void {
+    this.preview = new Set(nodeIds)
+    this.previewBuckets = new Set(bucketIds)
+    this.writeAll(board)
+  }
+
+  clearPreview(board: Board): void {
+    if (this.preview.size === 0 && this.previewBuckets.size === 0) return
+    this.preview.clear()
+    this.previewBuckets.clear()
+    this.writeAll(board)
+  }
+
+  /** Bucket ids currently previewed, for the bucket geometry to read. */
+  get previewedBuckets(): ReadonlySet<number> {
+    return this.previewBuckets
+  }
+
   setDeadLayers(count: number, board: Board): void {
     this.deadLayers = count
     this.writeAll(board)
@@ -473,6 +510,8 @@ export class BoardView {
     this.beadMaterial.uniforms.uTime!.value = this.time
 
     if (this.labelsDirty) this.redrawLabels(board)
+    // A pulsing preview must keep repainting even with the sim paused.
+    if (this.preview.size > 0) this.writeAll(board)
 
     for (const v of this.visuals.values()) {
       if (v.flash > 0) v.flash = Math.max(0, v.flash - dt)
@@ -518,7 +557,9 @@ export class BoardView {
     for (const v of this.visuals.values()) {
       if (v.head !== head) continue
       const dead = this.isDead(v.node, board)
-      const energy = dead
+      const previewed = this.preview.has(v.node.id)
+
+      let energy = dead
         ? VISUAL.inertEnergy
         : VISUAL.restEnergy
           + v.near * VISUAL.proximityEnergy
@@ -526,7 +567,15 @@ export class BoardView {
           + (v.pulseAmt / VISUAL.signalFlashSeconds) * VISUAL.signalEnergy
           + (v.spent ? VISUAL.spentEnergy : 0)
 
-      if (dead) COL.setHex(COLORS.inert)
+      // Muting drops everything EXCEPT previewed weights, so a hovered
+      // purchase picks its targets out of a dark net.
+      if (this.muted) energy *= previewed ? 1 : VISUAL.mutedEnergyScale
+      if (previewed) {
+        energy += VISUAL.previewEnergy * (0.75 + 0.25 * Math.sin(this.time * 7))
+      }
+
+      if (previewed) COL.setHex(COLORS.preview)
+      else if (dead) COL.setHex(COLORS.inert)
       else if (head) COL.setHex(v.flash > 0 ? COLORS.criticalLit : COLORS.critical)
       else COL.setHex(v.flash > 0 || v.pulseAmt > 0 ? COLORS.pinLit : COLORS.pin)
 

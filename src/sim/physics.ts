@@ -388,10 +388,22 @@ export function makeStepEvents(): StepEvents {
   return { pinHits: [], landings: [], culled: [] }
 }
 
-/** Which pocket owns this x position, if any. */
+/**
+ * Which pocket owns this x position.
+ *
+ * Pockets tile the floor with no gaps, so this should always hit. It falls
+ * back to the NEAREST pocket anyway: a token that resolves to nothing drops
+ * through, gets culled as stuck, and the player loses an activation with no
+ * score and no feedback. Never let a shot vanish.
+ */
 export function pocketAt(board: Board, x: number): PocketDef | null {
+  if (board.pockets.length === 0) return null
+  let nearest = board.pockets[0]!
+  let best = Infinity
   for (const p of board.pockets) {
     if (x >= p.x - p.halfWidth && x <= p.x + p.halfWidth) return p
+    const d = Math.abs(p.x - x)
+    if (d < best) { best = d; nearest = p }
   }
-  return null
+  return nearest
 }

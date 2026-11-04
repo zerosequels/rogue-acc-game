@@ -266,7 +266,45 @@ out of ten activations leaves no room for a bad pass, and half the runs died
 on benchmark 0. The first benchmark is an on-ramp; difficulty is carried by
 growth.
 
-### Not yet done (R3 from the proposal)
+## R3 — Docked market, feed, target preview
+
+- [x] **Bucket gaps fixed (gameplay bug).** Spikes were drawn at 55% width,
+      leaving dead strips between pockets where a token resolved to nothing,
+      fell through and was culled as stuck — a lost activation with no score
+      and no feedback. Pockets now TILE the floor at uniform width, and
+      `pocketAt` falls back to the nearest pocket so a shot can never vanish.
+      Spikes stay hard by POSITION (never centre), not by being small enough
+      to fall past.
+- [x] Neon bleed dialled back: bloom 0.46 → 0.30, radius 0.55 → 0.44,
+      threshold 0.42 → 0.52, dispersion 0.0055 → 0.0032.
+- [x] **The shop is a docked side panel**, not a full-screen sheet.
+- [x] **Fake AI news feed** (`flavor/news.ts`) streams while a round is live,
+      weighted by state: tense when activations are short, triumphant when
+      the target is in reach. Same panel, two modes.
+- [x] **The net mutes in market mode** so the panel and the preview carry focus.
+- [x] **Hover preview**: hovering a shop item lights the exact weights it
+      would hit, and the card states the count.
+- [x] **Precise purchases are clicked on the board**, not chosen from a list.
+
+**Why the shop had to move**
+
+The hover preview is the point, and a full-screen sheet made it impossible —
+it covered the board, so there was nowhere to show the targets. Docking the
+panel was the enabling change, not a cosmetic one. It also gave the feed
+somewhere to live and made board-click targeting the obvious interaction for
+precise purchases: with 175 nodes, picking from a list is unusable, but
+pointing at one is trivial.
+
+**How the preview stays honest**
+
+Preview and purchase call the SAME `resolveTargets` with the SAME rng, both
+derived through `purchaseRng(run)`. If those ever diverge the highlight
+becomes a lie, so there is exactly one function that decides each. The
+player now has complete information about a selection that is still random:
+you choose what to buy, the machine chooses where it lands, and you can see
+where before you commit.
+
+### Not yet done (from the proposal)
 
 - [ ] Ghost lattices receding into depth
 - [ ] Depth of field focused on the play plane

@@ -27,7 +27,7 @@ function scaled(count: number, board: Board): number {
 }
 import type { Board, NodeDef, PocketDef } from '../sim/board'
 import type { Card } from '../sim/deck'
-import type { Rng } from './rng'
+import { deriveRng, type Rng } from './rng'
 import type { RunState } from './state'
 
 export interface Offer {
@@ -147,6 +147,76 @@ export function cardCandidates(def: ShopItemDef, run: RunState): Card[] {
 // Purchase
 // ---------------------------------------------------------------------------
 
+/**
+ * What a purchase would actually hit.
+ *
+ * Preview and purchase MUST go through this same function with the same rng,
+ * or the highlight lies. That is the whole point of the hover preview: you
+ * see the real targets before you commit, while the selection stays random.
+ */
+export interface ResolvedTargets {
+  nodes: NodeDef[]
+  buckets: PocketDef[]
+  cards: Card[]
+  /** True when the player named the target rather than the machine. */
+  chosen: boolean
+}
+
+export function resolveTargets(
+  offer: Offer,
+  run: RunState,
+  board: Board,
+  rng: Rng,
+): ResolvedTargets {
+  const { def } = offer
+  const e = def.effect
+  const out: ResolvedTargets = { nodes: [], buckets: [], cards: [], chosen: false }
+
+  switch (e.kind) {
+    case 'node-level':
+    case 'node-transform': {
+      if (offer.target?.kind === 'node') {
+        const n = board.nodes.find((x) => x.id === offer.target!.id)
+        if (n) { out.nodes.push(n); out.chosen = true }
+        return out
+      }
+      const pool = nodeCandidates(def, board, offer.band)
+      const count = e.kind === 'node-level' || e.kind === 'node-transform'
+        ? scaled(e.count, board) : 1
+      out.nodes = rng.sample(pool, Math.min(count, pool.length))
+      return out
+    }
+    case 'bucket-level':
+    case 'bucket-transform': {
+      if (offer.target?.kind === 'bucket') {
+        const p = board.pockets.find((x) => x.id === offer.target!.id)
+        if (p) { out.buckets.push(p); out.chosen = true }
+        return out
+      }
+      const pool = bucketCandidates(def, board)
+      const count = e.kind === 'bucket-level' ? e.count : 1
+      out.buckets = rng.sample(pool, Math.min(count, pool.length))
+      return out
+    }
+    case 'card-level':
+    case 'card-transform':
+    case 'card-remove': {
+      if (offer.target?.kind === 'card') {
+        const c = run.deck.byId(offer.target.id)
+        if (c) { out.cards.push(c); out.chosen = true }
+        return out
+      }
+      if (e.kind === 'card-remove') return out
+      const pool = cardCandidates(def, run)
+      const count = e.kind === 'card-level' ? e.count : 1
+      out.cards = rng.sample(pool, Math.min(count, pool.length))
+      return out
+    }
+    default:
+      return out
+  }
+}
+
 export function applyPurchase(
   offer: Offer,
   run: RunState,
@@ -155,92 +225,63 @@ export function applyPurchase(
 ): PurchaseResult {
   const { def } = offer
   const e = def.effect
+  const t = resolveTargets(offer, run, board, rng)
 
   switch (e.kind) {
     case 'node-level': {
-      const pool = nodeCandidates(def, board, offer.band)
-      if (pool.length === 0) return fail('no weight left to improve')
-      // A precise purchase names ONE weight and hits it hard; blind and
-      // banded ones spray across several. That is the trade the price buys.
-      const picked = offer.target?.kind === 'node'
-        ? [board.nodes.find((n) => n.id === offer.target!.id)].filter(Boolean) as NodeDef[]
-        : rng.sample(pool, Math.min(scaled(e.count, board), pool.length))
-      if (picked.length === 0) return fail('no weight left to improve')
-      for (const n of picked) n.level = Math.min(PROGRESSION.maxNodeLevel, n.level + e.amount)
+      if (t.nodes.length === 0) return fail('no weight left to improve')
+      for (const n of t.nodes) n.level = Math.min(PROGRESSION.maxNodeLevel, n.level + e.amount)
       return done(
-        picked.length === 1
-          ? `weight #${picked[0]!.id} → L${picked[0]!.level}`
-          : `+${e.amount} level to ${picked.length} weights`,
+        t.nodes.length === 1
+          ? `weight #${t.nodes[0]!.id} → L${t.nodes[0]!.level}`
+          : `+${e.amount} level to ${t.nodes.length} weights`,
         true,
       )
     }
 
     case 'node-transform': {
-      const pool = nodeCandidates(def, board, offer.band)
-      if (pool.length === 0) return fail('no weight can take that')
-      const picked = offer.target?.kind === 'node'
-        ? [board.nodes.find((n) => n.id === offer.target!.id)].filter(Boolean) as NodeDef[]
-        : rng.sample(pool, Math.min(scaled(e.count, board), pool.length))
-      if (picked.length === 0) return fail('no weight can take that')
-      for (const n of picked) n.transforms.push(e.transform)
+      if (t.nodes.length === 0) return fail('no weight can take that')
+      for (const n of t.nodes) n.transforms.push(e.transform)
       return done(
-        picked.length === 1
-          ? `weight #${picked[0]!.id} → ${e.transform}`
-          : `${e.transform} on ${picked.length} weights`,
+        t.nodes.length === 1
+          ? `weight #${t.nodes[0]!.id} → ${e.transform}`
+          : `${e.transform} on ${t.nodes.length} weights`,
         true,
       )
     }
 
     case 'bucket-level': {
-      const pool = bucketCandidates(def, board)
-      if (pool.length === 0) return fail('no token left to widen')
-      const picked = offer.target?.kind === 'bucket'
-        ? [board.pockets.find((p) => p.id === offer.target!.id)].filter(Boolean) as PocketDef[]
-        : rng.sample(pool, Math.min(e.count, pool.length))
-      if (picked.length === 0) return fail('no token left to widen')
-      for (const b of picked) b.level = Math.min(PROGRESSION.maxBucketLevel, b.level + e.amount)
+      if (t.buckets.length === 0) return fail('no token left to widen')
+      for (const b of t.buckets) b.level = Math.min(PROGRESSION.maxBucketLevel, b.level + e.amount)
       return done(
-        picked.length === 1
-          ? `TOK_${String(picked[0]!.id).padStart(2, '0')} → L${picked[0]!.level}`
-          : `+${e.amount} level to ${picked.length} output tokens`,
+        t.buckets.length === 1
+          ? `TOK_${String(t.buckets[0]!.id).padStart(2, '0')} → L${t.buckets[0]!.level}`
+          : `+${e.amount} level to ${t.buckets.length} output tokens`,
         true,
       )
     }
 
     case 'bucket-transform': {
-      const pool = bucketCandidates(def, board)
-      const b = offer.target?.kind === 'bucket'
-        ? board.pockets.find((p) => p.id === offer.target!.id)
-        : pool.length ? rng.pick(pool) : undefined
-      if (!b) return fail('no token can take that')
-      b.transform = e.transform
-      return done(`TOK_${String(b.id).padStart(2, '0')} → ${e.transform}`, true)
+      if (t.buckets.length === 0) return fail('no token can take that')
+      for (const b of t.buckets) b.transform = e.transform
+      return done(`TOK_${String(t.buckets[0]!.id).padStart(2, '0')} → ${e.transform}`, true)
     }
 
     case 'card-level': {
-      const pool = cardCandidates(def, run)
-      if (pool.length === 0) return fail('every card is maxed')
-      const picked = offer.target?.kind === 'card'
-        ? [run.deck.byId(offer.target.id)].filter(Boolean) as Card[]
-        : rng.sample(pool, Math.min(e.count, pool.length))
-      if (picked.length === 0) return fail('every card is maxed')
-      for (const c of picked) c.level = Math.min(DECK.maxLevel, c.level + e.amount)
+      if (t.cards.length === 0) return fail('every card is maxed')
+      for (const c of t.cards) c.level = Math.min(DECK.maxLevel, c.level + e.amount)
       return done(
-        picked.length === 1
-          ? `card #${picked[0]!.id} → L${picked[0]!.level}`
-          : `+${e.amount} level to ${picked.length} cards`,
+        t.cards.length === 1
+          ? `card #${t.cards[0]!.id} → L${t.cards[0]!.level}`
+          : `+${e.amount} level to ${t.cards.length} cards`,
         false,
       )
     }
 
     case 'card-transform': {
-      const pool = cardCandidates(def, run)
-      const card = offer.target?.kind === 'card'
-        ? run.deck.byId(offer.target.id)
-        : pool.length ? rng.pick(pool) : undefined
-      if (!card) return fail('no card can take that')
-      card.transforms.push(e.transform)
-      return done(`card #${card.id} → ${e.transform}`, false)
+      if (t.cards.length === 0) return fail('no card can take that')
+      for (const c of t.cards) c.transforms.push(e.transform)
+      return done(`card #${t.cards[0]!.id} → ${e.transform}`, false)
     }
 
     case 'card-add': {
@@ -249,7 +290,7 @@ export function applyPurchase(
     }
 
     case 'card-remove': {
-      const card = offer.target?.kind === 'card' ? run.deck.byId(offer.target.id) : undefined
+      const card = t.cards[0]
       if (!card) return fail('pick a card to delete')
       run.deck.remove(card.id)
       return done(`deleted card #${card.id}`, false)
@@ -268,6 +309,15 @@ function done(message: string, boardChanged: boolean): PurchaseResult {
 }
 function fail(message: string): PurchaseResult {
   return { ok: false, message, boardChanged: false }
+}
+
+/**
+ * The rng a purchase will use. Preview and purchase must derive the SAME
+ * stream or the highlight is a lie — so there is exactly one place that
+ * decides it.
+ */
+export function purchaseRng(run: RunState): Rng {
+  return deriveRng(run.seed, 'buy', run.benchmarkIndex, run.totals.itemsBought)
 }
 
 export function rerollPrice(rerolls: number): number {
